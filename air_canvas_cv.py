@@ -4,14 +4,34 @@ import mediapipe as mp
 import time
 import warnings
 import os
+import urllib.request
 
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
-colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0),(0,0,0)]
-color_names = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN","Black"]
+# --- MediaPipe Tasks API setup ---
+BaseOptions = mp.tasks.BaseOptions
+HandLandmarker = mp.tasks.vision.HandLandmarker
+HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+RunningMode = mp.tasks.vision.RunningMode
+
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_landmarker.task")
+
+
+def download_model():
+    """Download the hand landmarker model if it does not already exist."""
+    if not os.path.exists(MODEL_PATH):
+        print(f"Downloading hand landmarker model to {MODEL_PATH} ...")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("Download complete.")
+
+
+colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 0, 0)]
+color_names = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN", "Black"]
 colorIndex = 0
 
 points = [[] for _ in range(len(colors))]
+
 
 def create_ui(width, height):
     ui_height = height // 8
@@ -24,7 +44,7 @@ def create_ui(width, height):
     button_width = min(50, width // (len(colors) + 2))
     button_step = button_width + 10
     button_x0 = 10  # first button start
-    button_boxes = []  
+    button_boxes = []
 
     for i, color in enumerate(colors):
         x = button_x0 + i * button_step
@@ -49,8 +69,19 @@ def create_ui(width, height):
     return ui, button_boxes, clear_box
 
 
-mpHands = mp.solutions.hands
-hands = mpHands.Hands(max_num_hands=1,model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+# Download the model before creating the landmarker
+download_model()
+
+options = HandLandmarkerOptions(
+    base_options=BaseOptions(model_asset_path=MODEL_PATH),
+    running_mode=RunningMode.VIDEO,
+    num_hands=1,
+    min_hand_detection_confidence=0.5,
+    min_hand_presence_confidence=0.5,
+    min_tracking_confidence=0.5,
+)
+landmarker = HandLandmarker.create_from_options(options)
+
 
 def open_camera():
     preferred_backend = cv2.CAP_DSHOW if os.name == "nt" else 0
@@ -90,21 +121,27 @@ frame = cv2.flip(frame, 1)
 frame_height, frame_width = frame.shape[:2]
 
 # Build UI and canvas based on actual size
-ui, color_button_boxes, clear_box = create_ui(frame_width, frame_height)    
+ui, color_button_boxes, clear_box = create_ui(frame_width, frame_height)
 ui_height = ui.shape[0]
 canvas = np.full((frame_height, frame_width, 3), 255, dtype=np.uint8)
 
+
 def get_index_finger_tip(hand_landmarks):
-    return (int(hand_landmarks.landmark[8].x * frame_width),
-            int(hand_landmarks.landmark[8].y * frame_height))
+    """Return pixel coordinates of the index finger tip (landmark 8)."""
+    return (int(hand_landmarks[8].x * frame_width),
+            int(hand_landmarks[8].y * frame_height))
+
 
 def is_index_finger_raised(hand_landmarks):
-    return hand_landmarks.landmark[8].y < hand_landmarks.landmark[6].y
+    """Check if the index finger tip (landmark 8) is above its PIP joint (landmark 6)."""
+    return hand_landmarks[8].y < hand_landmarks[6].y
+
 
 def in_box(pt, box):
     x, y = pt
     x1, y1, x2, y2 = box
     return (x1 <= x <= x2) and (y1 <= y <= y2)
+
 
 prev_point = None
 min_distance = 5
@@ -113,6 +150,7 @@ line_thickness = 2
 
 running = True
 prev_time = time.time()
+frame_timestamp_ms = 0
 
 while running:
     ret, frame = cap.read()
@@ -123,10 +161,13 @@ while running:
     frame = cv2.flip(frame, 1)
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    results = hands.process(rgb_frame)
+    # Convert the frame to a MediaPipe Image and run hand landmark detection
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    results = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
+    frame_timestamp_ms += 33  # approximate 30 FPS interval
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
+    if results.hand_landmarks:
+        for hand_landmarks in results.hand_landmarks:
             index_finger_tip = get_index_finger_tip(hand_landmarks)
 
             if is_index_finger_raised(hand_landmarks):
@@ -183,5 +224,6 @@ while running:
     elif key == ord('-'):
         line_thickness = max(line_thickness - 1, 1)
 
+landmarker.close()
 cap.release()
 cv2.destroyAllWindows()
