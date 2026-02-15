@@ -2,18 +2,21 @@
 
 ## Getting Started
 1. **Python3**: Download the latest version of python 3 at https://www.python.org/downloads/
-2. Install Mediapipe, OpenCV, and Numpy python libraries. Copy and paste the following line into your terminal to do so.
+2. Clone the repository on to your computer.
 ```
-pip3 install mediapipe opencv numpy
+git clone https://github.com/BUILT-Illinois/built-air-canvas-cv.git
+cd built-air-canvas-cv
+```
+3. Install dependencies from the requirements file.
+```
+pip3 install -r requirements.txt
 ```
 Learn more about these libraries here:
 - [Numpy](https://numpy.org)
-- [MediaPipe](https://ai.google.dev/edge/mediapipe/solutions/guide)
+- [MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker)
 - [OpenCV](https://opencv.org/releases/)
-3. Clone the repository on to your computer. Make sure to do this 
-```
-git clone https://github.com/BUILT-Illinois/built-air-canvas-cv.git
-```
+
+**Note:** On first run, the hand landmarker model file (`hand_landmarker.task`) will be automatically downloaded from Google's model repository.
 
 ## Our Tech Stack
 
