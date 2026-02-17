@@ -1,16 +1,18 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 import time
 import warnings
 import os
+import urllib.request
 
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
 colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0),(0,0,0)]
 color_names = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN","Black"]
 colorIndex = 0
-
 points = [[] for _ in range(len(colors))]
 
 def create_ui(width, height):
@@ -49,8 +51,29 @@ def create_ui(width, height):
     return ui, button_boxes, clear_box
 
 
-mpHands = mp.solutions.hands
-hands = mpHands.Hands(max_num_hands=1,model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+def get_hand_landmarker_model():
+    model_path = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
+    if not os.path.exists(model_path):
+        model_url = (
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+            "hand_landmarker/float16/1/hand_landmarker.task"
+        )
+        print("Downloading hand landmarker model...")
+        urllib.request.urlretrieve(model_url, model_path)
+    return model_path
+
+
+model_path = get_hand_landmarker_model()
+base_options = mp_python.BaseOptions(model_asset_path=model_path)
+hand_landmarker_options = vision.HandLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.VIDEO,
+    num_hands=1,
+    min_hand_detection_confidence=0.5,
+    min_hand_presence_confidence=0.5,
+    min_tracking_confidence=0.5,
+)
+hand_landmarker = vision.HandLandmarker.create_from_options(hand_landmarker_options)
 
 def open_camera():
     preferred_backend = cv2.CAP_DSHOW if os.name == "nt" else 0
@@ -95,11 +118,18 @@ ui_height = ui.shape[0]
 canvas = np.full((frame_height, frame_width, 3), 255, dtype=np.uint8)
 
 def get_index_finger_tip(hand_landmarks):
-    return (int(hand_landmarks.landmark[8].x * frame_width),
-            int(hand_landmarks.landmark[8].y * frame_height))
+    return (int(hand_landmarks[8].x * frame_width),
+            int(hand_landmarks[8].y * frame_height))
 
 def is_index_finger_raised(hand_landmarks):
-    return hand_landmarks.landmark[8].y < hand_landmarks.landmark[6].y
+    return hand_landmarks[8].y < hand_landmarks[6].y
+
+def is_only_index_finger_raised(hand_landmarks):
+    index_up = hand_landmarks[8].y < hand_landmarks[6].y
+    middle_up = hand_landmarks[12].y < hand_landmarks[10].y
+    ring_up = hand_landmarks[16].y < hand_landmarks[14].y
+    pinky_up = hand_landmarks[20].y < hand_landmarks[18].y
+    return index_up and not (middle_up or ring_up or pinky_up)
 
 def in_box(pt, box):
     x, y = pt
@@ -110,6 +140,7 @@ prev_point = None
 min_distance = 5
 is_drawing = False
 line_thickness = 2
+video_start_time = time.time()
 
 running = True
 prev_time = time.time()
@@ -123,13 +154,15 @@ while running:
     frame = cv2.flip(frame, 1)
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    results = hands.process(rgb_frame)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    timestamp_ms = int((time.time() - video_start_time) * 1000)
+    results = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
+    if results.hand_landmarks:
+        for hand_landmarks in results.hand_landmarks:
             index_finger_tip = get_index_finger_tip(hand_landmarks)
 
-            if is_index_finger_raised(hand_landmarks):
+            if is_only_index_finger_raised(hand_landmarks):
                 if index_finger_tip[1] <= ui_height:  # Toolbar area
                     # Clear button
                     if in_box(index_finger_tip, clear_box):
@@ -159,7 +192,9 @@ while running:
 
             cv2.circle(frame, index_finger_tip, 5, colors[colorIndex], -1)
 
-    output = cv2.addWeighted(frame, 0.6, canvas, 0.4, 0)
+    output = frame.copy()
+    draw_mask = np.any(canvas != 255, axis=2)
+    output[draw_mask] = canvas[draw_mask]
     output[:ui_height, :] = ui
 
     current_time = time.time()
@@ -184,4 +219,5 @@ while running:
         line_thickness = max(line_thickness - 1, 1)
 
 cap.release()
+hand_landmarker.close()
 cv2.destroyAllWindows()
