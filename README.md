@@ -1,4 +1,4 @@
-# B[U]ILT Air Canvas
+# B[U]ILT Air Canvas (Computer Vision)
 
 ## Getting Started
 1. **Python3**: Download the latest version of python 3 at https://www.python.org/downloads/
