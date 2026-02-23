@@ -4,10 +4,6 @@
 DEVICE_ID = "laptop_01"  # Change for each device, to know which device is drawing
 SEND_INTERVAL_MS = 100  # Send data every 100ms (10 times/second)
 
-
-WEBSOCKET_ENABLED = False #websocket toggle
-WEBSOCKET_URL = "wss://gs84tnv26l.execute-api.us-east-2.amazonaws.com/production/" 
-
 MQTT_ENABLED = True #mqtt toggle
 MQTT_ENDPOINT = "aevqdnds5bghe-ats.iot.us-east-2.amazonaws.com"
 MQTT_CERT_PATH = "certs/device-certificate.pem.crt" #replace device with certificate
