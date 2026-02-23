@@ -8,6 +8,28 @@ import warnings
 import os
 import urllib.request
 
+#Websocket Imports
+try:
+    from websocket_handler import WebSocketHandler, format_hand_data
+    from config import WEBSOCKET_ENABLED, WEBSOCKET_URL, DEVICE_ID, SEND_INTERVAL_MS
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    print("WebSocket modules not found. Running without WebSocket streaming.")
+    WEBSOCKET_AVAILABLE = False
+    WEBSOCKET_ENABLED = False
+
+#MQTT Imports
+try:
+    from mqtt_handler import MQTTHandler
+    from config import (MQTT_ENABLED, MQTT_ENDPOINT, MQTT_CERT_PATH, 
+                        MQTT_KEY_PATH, MQTT_CA_PATH, MQTT_TOPIC_PREFIX)
+    MQTT_AVAILABLE = True
+except ImportError:
+    print("MQTT modules not found. Running without MQTT streaming.")
+    MQTT_AVAILABLE = False
+    MQTT_ENABLED = False
+
+
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
 colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0),(0,0,0)]
@@ -74,6 +96,34 @@ hand_landmarker_options = vision.HandLandmarkerOptions(
     min_tracking_confidence=0.5,
 )
 hand_landmarker = vision.HandLandmarker.create_from_options(hand_landmarker_options)
+
+#Initialize Websocket
+ws_handler = None
+if WEBSOCKET_AVAILABLE and WEBSOCKET_ENABLED:
+    print("Initializing WebSocket connection...")
+    ws_handler = WebSocketHandler(WEBSOCKET_URL, DEVICE_ID)
+    ws_handler.connect()
+    print(f"WebSocket streaming: {'ENABLED' if ws_handler.connected else 'FAILED'}")
+else:
+    print("WebSocket streaming: DISABLED")
+
+#Initialize MQTT
+mqtt_handler = None
+if MQTT_AVAILABLE and MQTT_ENABLED:
+    import os
+    print("Initializing MQTT connection...")
+    mqtt_handler = MQTTHandler(
+        endpoint=MQTT_ENDPOINT,
+        cert_path=os.path.join(os.path.dirname(__file__), MQTT_CERT_PATH),
+        key_path=os.path.join(os.path.dirname(__file__), MQTT_KEY_PATH),
+        ca_path=os.path.join(os.path.dirname(__file__), MQTT_CA_PATH),
+        client_id=f"HandTracking-{DEVICE_ID}",
+        topic_prefix=MQTT_TOPIC_PREFIX
+    )
+    mqtt_handler.connect()
+    print(f"MQTT streaming: {'ENABLED' if mqtt_handler.connected else 'FAILED'}")
+else:
+    print("MQTT streaming: DISABLED")
 
 def open_camera():
     preferred_backend = cv2.CAP_DSHOW if os.name == "nt" else 0
@@ -145,6 +195,9 @@ video_start_time = time.time()
 running = True
 prev_time = time.time()
 
+last_ws_send_time = 0
+ws_send_interval = SEND_INTERVAL_MS / 1000.0 if WEBSOCKET_AVAILABLE and WEBSOCKET_ENABLED else 0
+
 while running:
     ret, frame = cap.read()
     if not ret or frame is None:
@@ -192,6 +245,34 @@ while running:
 
             cv2.circle(frame, index_finger_tip, 5, colors[colorIndex], -1)
 
+        current_time = time.time()
+        if results.hand_landmarks and (current_time - last_ws_send_time) >= ws_send_interval:
+            hand_data = format_hand_data(
+                results.hand_landmarks,
+                frame_width,
+                frame_height,
+                colorIndex,
+                color_names,
+                is_drawing
+            )
+            
+            # Send to WebSocket
+            if ws_handler and ws_handler.connected:
+                try:
+                    ws_handler.send_data(hand_data)
+                except Exception as e:
+                    print(f"Error sending WebSocket data: {e}")
+
+            # Send to MQTT
+            if mqtt_handler and mqtt_handler.connected:
+                try:
+                    mqtt_handler.publish(hand_data)
+                except Exception as e:
+                    print(f"Error sending MQTT data: {e}")
+            
+            last_ws_send_time = current_time  # ADD THIS LINE!
+
+
     output = frame.copy()
     draw_mask = np.any(canvas != 255, axis=2)
     output[draw_mask] = canvas[draw_mask]
@@ -204,6 +285,21 @@ while running:
 
     cv2.putText(output, f"FPS: {int(fps)}", (10, frame_height - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    #Websocket status
+    if ws_handler:
+        ws_status = "WS: CONNECTED" if ws_handler.connected else "WS: DISCONNECTED"
+        ws_color = (0, 255, 0) if ws_handler.connected else (0, 0, 255)
+        cv2.putText(output, ws_status, (10, frame_height - 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, ws_color, 2)
+        
+    #MQTT status
+    if mqtt_handler:
+        mqtt_status = "MQTT: CONNECTED" if mqtt_handler.connected else "MQTT: DISCONNECTED"
+        mqtt_color = (0, 255, 0) if mqtt_handler.connected else (0, 0, 255)
+        cv2.putText(output, mqtt_status, (10, frame_height - 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, mqtt_color, 2)
+
 
     cv2.imshow("AirSketch", output)
 
@@ -218,6 +314,14 @@ while running:
     elif key == ord('-'):
         line_thickness = max(line_thickness - 1, 1)
 
-cap.release()
+#Disconnects websocket
+if ws_handler:
+    ws_handler.disconnect()
+
+#Disconnects MQTT
+if mqtt_handler:
+    mqtt_handler.disconnect()
+
 hand_landmarker.close()
+cap.release()
 cv2.destroyAllWindows()
