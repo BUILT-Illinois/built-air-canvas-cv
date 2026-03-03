@@ -97,16 +97,6 @@ hand_landmarker_options = vision.HandLandmarkerOptions(
 )
 hand_landmarker = vision.HandLandmarker.create_from_options(hand_landmarker_options)
 
-#Initialize Websocket
-ws_handler = None
-if WEBSOCKET_AVAILABLE and WEBSOCKET_ENABLED:
-    print("Initializing WebSocket connection...")
-    ws_handler = WebSocketHandler(WEBSOCKET_URL, DEVICE_ID)
-    ws_handler.connect()
-    print(f"WebSocket streaming: {'ENABLED' if ws_handler.connected else 'FAILED'}")
-else:
-    print("WebSocket streaming: DISABLED")
-
 #Initialize MQTT
 mqtt_handler = None
 if MQTT_AVAILABLE and MQTT_ENABLED:
@@ -124,6 +114,32 @@ if MQTT_AVAILABLE and MQTT_ENABLED:
     print(f"MQTT streaming: {'ENABLED' if mqtt_handler.connected else 'FAILED'}")
 else:
     print("MQTT streaming: DISABLED")
+# Gesture recognition
+def get_gesture_recognizer_model():
+    model_path = os.path.join(os.path.dirname(__file__), "gesture_recognizer.task")
+    if not os.path.exists(model_path):
+        model_url = ( # double check
+            "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/"
+            "gesture_recognizer/float16/1/gesture_recognizer.task"
+        )
+        print("Downloading gesture recognizer model...")
+        urllib.request.urlretrieve(model_url, model_path)
+    return model_path
+
+# gesture recog. setup
+gesture_model_path = get_gesture_recognizer_model()
+gesture_recognizer_options = vision.GestureRecognizerOptions(
+    base_options=mp_python.BaseOptions(model_asset_path=gesture_model_path),
+    running_mode=vision.RunningMode.VIDEO,
+    num_hands=1,
+    min_hand_detection_confidence=0.5,
+    min_hand_presence_confidence=0.5, # in video mode, if 
+    min_tracking_confidence=0.5,
+)
+gesture_recognizer = vision.GestureRecognizer.create_from_options(gesture_recognizer_options)
+
+
+
 
 def open_camera():
     preferred_backend = cv2.CAP_DSHOW if os.name == "nt" else 0
@@ -198,7 +214,25 @@ prev_time = time.time()
 last_ws_send_time = 0
 ws_send_interval = SEND_INTERVAL_MS / 1000.0 if WEBSOCKET_AVAILABLE and WEBSOCKET_ENABLED else 0
 
-while running:
+
+
+
+gesture_cooldowns = {}
+COOLDOWN_SECS = 1.0
+
+def gesture_on_cooldown(gesture_name, cooldown=COOLDOWN_SECS):
+    curr_time = time.time()
+    last_time = gesture_cooldowns.get(gesture_name, 0)
+
+    if curr_time - last_time < cooldown:
+        return True
+    
+    gesture_cooldowns[gesture_name] = curr_time
+    return False
+
+while running: 
+    gesture_confidence = 0.0
+    current_gesture = "None"   
     ret, frame = cap.read()
     if not ret or frame is None:
         print("Error: Failed to capture frame.")
@@ -209,13 +243,22 @@ while running:
 
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
     timestamp_ms = int((time.time() - video_start_time) * 1000)
-    results = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
+    results = gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
 
     if results.hand_landmarks:
-        for hand_landmarks in results.hand_landmarks:
+        for idx, hand_landmarks in enumerate(results.hand_landmarks):
             index_finger_tip = get_index_finger_tip(hand_landmarks)
 
-            if is_only_index_finger_raised(hand_landmarks):
+            # get gesture for this specific hand
+            if results.gestures and idx < len(results.gestures):
+                gesture = results.gestures[idx][0]
+                current_gesture = gesture.category_name
+                gesture_confidence = gesture.score
+                # cv2.putText(output, f"Gesture: {gesture_name} ({score:.2f})", (10, frame_height - 40),
+                # cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2) # yellow
+    
+            # map gestures to (7) actions ["None", "Closed_Fist", "Open_Palm", "Pointing_Up", "Thumb_Down", "Thumb_Up", "Victory", "ILoveYou"].
+            if current_gesture == "Pointing_Up": # DRAWING
                 if index_finger_tip[1] <= ui_height:  # Toolbar area
                     # Clear button
                     if in_box(index_finger_tip, clear_box):
@@ -239,11 +282,39 @@ while running:
                         if np.linalg.norm(np.array(index_finger_tip) - np.array(prev_point)) > min_distance:
                             cv2.line(canvas, prev_point, index_finger_tip, colors[colorIndex], line_thickness)
                             prev_point = index_finger_tip
-            else:
+            elif current_gesture == "Open_Palm": # CLEAR CANVAS
+                if not gesture_on_cooldown("Open_Palm"):
+                    canvas.fill(255)
+                    for p in points:
+                        p.clear()
+                    prev_point = None
+                    is_drawing = False
+            elif current_gesture == "Victory": # decide later
+                pass
+            elif current_gesture == "Thumb_Up": # same as '+' for now
+                if not gesture_on_cooldown("Thumb_Up", cooldown=0.4):  
+                    line_thickness = min(line_thickness + 1, 10)
+            elif current_gesture == "Thumb_Down": # same as '-' for now
+                if not gesture_on_cooldown("Thumb_Down", cooldown=0.4):
+                    line_thickness = max(line_thickness - 1, 1)
+            elif current_gesture == "ILoveYou": # same as 's' for now
+                if not gesture_on_cooldown("ILoveYou", cooldown=1.0): # adjust if necessary
+                    cv2.imwrite("Air_Sketch_drawing.png", canvas)
+                    print("Drawing saved as 'Air_Sketch_drawing.png'")
+            elif current_gesture == "Closed_Fist":
+                prev_point = None
+                is_drawing = False
+            else: # no gesture
                 prev_point = None
                 is_drawing = False
 
             cv2.circle(frame, index_finger_tip, 5, colors[colorIndex], -1)
+    else: # no hand detected, reset gesture info
+        current_gesture = "None"
+        gesture_confidence = 0.0
+        prev_point = None
+        is_drawing = False
+
 
         current_time = time.time()
         if results.hand_landmarks and (current_time - last_ws_send_time) >= ws_send_interval:
@@ -277,6 +348,18 @@ while running:
     draw_mask = np.any(canvas != 255, axis=2)
     output[draw_mask] = canvas[draw_mask]
     output[:ui_height, :] = ui
+
+
+    # gesture_name = ""
+    # if results.gestures:
+    #     gesture_name = results.gestures[0][0].category_name
+    #     score = results.gestures[0][0].score
+    gesture_color = (0, 255, 0) # green if detected
+    cv2.putText(output, f"Gesture: {current_gesture} ({gesture_confidence:.2f})",
+                (10, frame_height - 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, gesture_color, 2) 
+    
+
 
     current_time = time.time()
     dt = current_time - prev_time
@@ -324,4 +407,5 @@ if mqtt_handler:
 
 hand_landmarker.close()
 cap.release()
+gesture_recognizer.close()
 cv2.destroyAllWindows()
