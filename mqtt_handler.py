@@ -68,3 +68,18 @@ class MQTTHandler:
                 print(f"MQTT disconnection error: {e}")
 
         self.connected = False
+    
+def format_hand_data(hand_landmarks, frame_width, frame_height, color_index, color_names, is_drawing):
+        landmarks = []
+        for hand in hand_landmarks:
+            for lm in hand:
+                landmarks.append({
+                    "x": round(lm.x * frame_width, 2),
+                    "y": round(lm.y * frame_height, 2),
+                    "z": round(lm.z, 4)
+                })
+        return {
+            "landmarks": landmarks,
+            "color": color_names[color_index],
+            "is_drawing": is_drawing
+        }   
