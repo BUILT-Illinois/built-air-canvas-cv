@@ -89,7 +89,6 @@ hand_landmarker_options = vision.HandLandmarkerOptions(
 )
 hand_landmarker = vision.HandLandmarker.create_from_options(hand_landmarker_options)
 
-# Gesture recognizer setup
 # Gesture recognition
 def get_gesture_recognizer_model():
     model_path = os.path.join(os.path.dirname(__file__), "gesture_recognizer.task")
@@ -113,8 +112,6 @@ gesture_recognizer_options = vision.GestureRecognizerOptions(
     min_tracking_confidence=0.5,
 )
 gesture_recognizer = vision.GestureRecognizer.create_from_options(gesture_recognizer_options)
-
-
 
 # Initialize MQTT
 mqtt_handler = None
