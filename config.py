@@ -5,7 +5,7 @@ DEVICE_ID = "laptop_01"  # Change for each device, to know which device is drawi
 SEND_INTERVAL_MS = 100  # Send data every 100ms (10 times/second)
 
 MQTT_ENABLED = True #mqtt toggle
-MQTT_ENDPOINT = "aevqdnds5bghe-ats.iot.us-east-2.amazonaws.com"
+MQTT_ENDPOINT = "aevqdnds5bghe-ats.iot.us-east-1.amazonaws.com"
 MQTT_CERT_PATH = "certs/device-certificate.pem.crt" #replace device with certificate
 MQTT_KEY_PATH = "certs/device-private.pem.key" #replace device with key
 MQTT_CA_PATH = "certs/AmazonRootCA1.pem"
