@@ -188,6 +188,16 @@ def gesture_on_cooldown(gesture_name, cooldown=COOLDOWN_SECS):
     gesture_cooldowns[gesture_name] = curr_time
     return False
 
+
+HAND_CONNECTIONS = [
+    (0,1),(1,2),(2,3),(3,4),          # thumb
+    (0,5),(5,6),(6,7),(7,8),          # index
+    (5,9),(9,10),(10,11),(11,12),     # middle
+    (9,13),(13,14),(14,15),(15,16),   # ring
+    (13,17),(17,18),(18,19),(19,20),  # pinky
+    (0,17)                            # palm
+]
+
 while running: 
     ret, frame = cap.read()
     if not ret or frame is None:
@@ -203,6 +213,21 @@ while running:
 
     if results.hand_landmarks:
         for idx, hand_landmarks in enumerate(results.hand_landmarks):
+            # Convert normalized coords → pixel coords
+            hand_points = []
+            for lm in hand_landmarks:
+                x = int(lm.x * frame_width)
+                y = int(lm.y * frame_height)
+                hand_points.append((x, y))
+
+            # Draw connections
+            if len(hand_points) == 21:
+                for start, end in HAND_CONNECTIONS:
+                    cv2.line(frame, hand_points[start], hand_points[end], (0,255,0), 2)
+
+                # Draw joints
+                for pt in hand_points:
+                    cv2.circle(frame, pt, 3, (255,0,0), -1)
             index_finger_tip = get_index_finger_tip(hand_landmarks)
 
             # get gesture for this specific hand
