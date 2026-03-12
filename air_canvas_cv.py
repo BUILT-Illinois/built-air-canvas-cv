@@ -68,7 +68,7 @@ base_options = mp_python.BaseOptions(model_asset_path=model_path)
 hand_landmarker_options = vision.HandLandmarkerOptions(
     base_options=base_options,
     running_mode=vision.RunningMode.VIDEO,
-    num_hands=1,
+    num_hands=2,
     min_hand_detection_confidence=0.5,
     min_hand_presence_confidence=0.5,
     min_tracking_confidence=0.5,
@@ -163,9 +163,9 @@ def in_box(pt, box):
     x1, y1, x2, y2 = box
     return (x1 <= x <= x2) and (y1 <= y <= y2)
 
-prev_point = None
+prev_point = {}
 min_distance = 5
-is_drawing = False
+is_drawing = {}
 line_thickness = 2
 video_start_time = time.time()
 
@@ -212,6 +212,11 @@ while running:
     results = gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
 
     if results.hand_landmarks:
+        for hand_index, hand_landmarks in enumerate(results.hand_landmarks):
+            if hand_index not in prev_point:
+                prev_point[hand_index] = None
+                is_drawing[hand_index] = False
+                
         for idx, hand_landmarks in enumerate(results.hand_landmarks):
             # Convert normalized coords → pixel coords
             hand_points = []
@@ -246,8 +251,8 @@ while running:
                         for p in points:
                             p.clear()
                         canvas.fill(255)
-                        prev_point = None
-                        is_drawing = False
+                        prev_point[hand_index] = None
+                        is_drawing[hand_index] = False
                     else:
                         # Color buttons
                         for i, box in enumerate(color_button_boxes):
@@ -255,6 +260,17 @@ while running:
                                 colorIndex = i
                                 break
                 else:
+                    if not is_drawing[hand_index]:
+                        prev_point[hand_index] = index_finger_tip
+                        is_drawing[hand_index] = True
+
+                    if prev_point[hand_index] is not None:
+                        if np.linalg.norm(np.array(index_finger_tip) - np.array(prev_point[hand_index])) > min_distance:
+                            cv2.line(canvas, prev_point[hand_index], index_finger_tip, colors[colorIndex], line_thickness)
+                            prev_point[hand_index] = index_finger_tip
+            else:
+                prev_point[hand_index] = None
+                is_drawing[hand_index] = False
                     if not is_drawing:
                         prev_point = index_finger_tip
                         is_drawing = True
