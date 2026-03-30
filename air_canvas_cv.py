@@ -7,8 +7,40 @@ import time
 import warnings
 import os
 import urllib.request
+import json
+import subprocess
+import sys
+import io
 
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
+
+# Load configuration
+def load_config():
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    if not os.path.exists(config_path):
+        return {"streaming": {"enabled": False}}
+    try:
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    except:
+        return {"streaming": {"enabled": False}}
+
+config = load_config()
+
+# Check if ffmpeg is available
+def ffmpeg_available():
+    try:
+        subprocess.run(['ffmpeg', '-version'], 
+                      stdout=subprocess.DEVNULL, 
+                      stderr=subprocess.DEVNULL)
+        return True
+    except FileNotFoundError:
+        return False
+
+STREAMING_ENABLED = config.get('streaming', {}).get('enabled', False) and ffmpeg_available()
+
+if config.get('streaming', {}).get('enabled', False) and not ffmpeg_available():
+    print("Warning: Streaming enabled in config but ffmpeg not found. Streaming disabled.")
 
 colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0),(0,0,0)]
 color_names = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN","Black"]
@@ -25,8 +57,8 @@ def create_ui(width, height):
 
     button_width = min(50, width // (len(colors) + 2))
     button_step = button_width + 10
-    button_x0 = 10  # first button start
-    button_boxes = []  
+    button_x0 = 10
+    button_boxes = []
 
     for i, color in enumerate(colors):
         x = button_x0 + i * button_step
@@ -39,7 +71,6 @@ def create_ui(width, height):
         cv2.putText(ui, color_names[i][:1], (cx - 5, cy + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
-        # store a rectangular hitbox around the circular button
         button_boxes.append((x, 0, x + button_width, ui_height))
 
     clear_box = (width - 100, 10, width - 10, ui_height - 10)
@@ -49,7 +80,6 @@ def create_ui(width, height):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
     return ui, button_boxes, clear_box
-
 
 def get_hand_landmarker_model():
     model_path = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
@@ -61,7 +91,6 @@ def get_hand_landmarker_model():
         print("Downloading hand landmarker model...")
         urllib.request.urlretrieve(model_url, model_path)
     return model_path
-
 
 model_path = get_hand_landmarker_model()
 base_options = mp_python.BaseOptions(model_asset_path=model_path)
@@ -90,7 +119,6 @@ def open_camera():
         cap_try.release()
     return None
 
-
 cap = open_camera()
 if cap is None:
     print("Error: Could not open any camera (tried indices 0..3).")
@@ -116,6 +144,58 @@ frame_height, frame_width = frame.shape[:2]
 ui, color_button_boxes, clear_box = create_ui(frame_width, frame_height)    
 ui_height = ui.shape[0]
 canvas = np.full((frame_height, frame_width, 3), 255, dtype=np.uint8)
+
+# Setup streaming if enabled
+pipe = None
+if STREAMING_ENABLED:
+    try:
+        stream_url = config['youtube']['stream_url']
+        stream_key = config['youtube']['stream_key']
+        full_url = f"{stream_url}{stream_key}"
+        
+        bitrate = config['streaming'].get('bitrate', '3000k')
+        preset = config['streaming'].get('preset', 'ultrafast')
+        
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-y',
+            '-f', 'rawvideo',
+            '-vcodec', 'rawvideo',
+            '-pix_fmt', 'bgr24',
+            '-s', f'{frame_width}x{frame_height}',
+            '-r', '30',
+            '-i', 'pipe:0',
+            '-f', 'lavfi',
+            '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', preset,
+            '-b:v', bitrate,
+            '-maxrate', bitrate,
+            '-bufsize', '6000k',
+            '-g', '60',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-ar', '44100',
+            '-f', 'flv',
+            full_url
+        ]
+        
+        pipe = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            bufsize=10**8
+        )
+        
+        print("YouTube streaming started!")
+        print(f"Streaming to: {stream_url}")
+        print(f"Resolution: {frame_width}x{frame_height}")
+        
+    except Exception as e:
+        print(f"Failed to start streaming: {e}")
+        import traceback
+        traceback.print_exc()
+        pipe = None
 
 def get_index_finger_tip(hand_landmarks):
     return (int(hand_landmarks[8].x * frame_width),
@@ -163,8 +243,7 @@ while running:
             index_finger_tip = get_index_finger_tip(hand_landmarks)
 
             if is_only_index_finger_raised(hand_landmarks):
-                if index_finger_tip[1] <= ui_height:  # Toolbar area
-                    # Clear button
+                if index_finger_tip[1] <= ui_height:
                     if in_box(index_finger_tip, clear_box):
                         for p in points:
                             p.clear()
@@ -172,7 +251,6 @@ while running:
                         prev_point = None
                         is_drawing = False
                     else:
-                        # Color buttons
                         for i, box in enumerate(color_button_boxes):
                             if in_box(index_finger_tip, box):
                                 colorIndex = i
@@ -206,6 +284,14 @@ while running:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
     cv2.imshow("AirSketch", output)
+    
+    # Stream to YouTube if enabled
+    if pipe is not None:
+        try:
+            pipe.stdin.write(output.tobytes())
+        except (BrokenPipeError, IOError) as e:
+            print(f"Streaming error: {e}")
+            pipe = None
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
@@ -217,6 +303,14 @@ while running:
         line_thickness = min(line_thickness + 1, 10)
     elif key == ord('-'):
         line_thickness = max(line_thickness - 1, 1)
+
+# Cleanup
+if pipe is not None:
+    try:
+        pipe.stdin.close()
+        pipe.wait(timeout=5)
+    except:
+        pipe.kill()
 
 cap.release()
 hand_landmarker.close()
