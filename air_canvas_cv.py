@@ -29,11 +29,14 @@ config = load_config()
 # Check if ffmpeg is available
 def ffmpeg_available():
     try:
-        subprocess.run(['ffmpeg', '-version'], 
-                      stdout=subprocess.DEVNULL, 
-                      stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ['ffmpeg', '-version'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
         return True
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.CalledProcessError):
         return False
 
 STREAMING_ENABLED = config.get('streaming', {}).get('enabled', False) and ffmpeg_available()
