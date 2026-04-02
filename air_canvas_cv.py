@@ -20,7 +20,8 @@ def load_config():
     try:
         with open(config_path, 'r') as f:
             return json.load(f)
-    except:
+    except (OSError, json.JSONDecodeError) as e:
+        warnings.warn(f"Failed to load config from {config_path}: {e}. Using default configuration.")
         return {"streaming": {"enabled": False}}
 
 config = load_config()
