@@ -339,9 +339,19 @@ while running:
 if pipe is not None:
     try:
         pipe.stdin.close()
+    except Exception as e:
+        print(f"Error closing ffmpeg stdin: {e}")
+    try:
         pipe.wait(timeout=5)
-    except:
+    except subprocess.TimeoutExpired:
+        print("ffmpeg process did not terminate within timeout; killing process.")
         pipe.kill()
+        try:
+            pipe.wait(timeout=5)
+        except Exception as e:
+            print(f"Error waiting for ffmpeg to terminate after kill: {e}")
+    except Exception as e:
+        print(f"Error waiting for ffmpeg process: {e}")
 
 cap.release()
 hand_landmarker.close()
