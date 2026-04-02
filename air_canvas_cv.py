@@ -9,8 +9,6 @@ import os
 import urllib.request
 import json
 import subprocess
-import sys
-import io
 
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
@@ -148,55 +146,63 @@ canvas = np.full((frame_height, frame_width, 3), 255, dtype=np.uint8)
 # Setup streaming if enabled
 pipe = None
 if STREAMING_ENABLED:
-    try:
-        stream_url = config['youtube']['stream_url']
-        stream_key = config['youtube']['stream_key']
-        full_url = f"{stream_url}{stream_key}"
-        
-        bitrate = config['streaming'].get('bitrate', '3000k')
-        preset = config['streaming'].get('preset', 'ultrafast')
-        
-        ffmpeg_cmd = [
-            'ffmpeg',
-            '-y',
-            '-f', 'rawvideo',
-            '-vcodec', 'rawvideo',
-            '-pix_fmt', 'bgr24',
-            '-s', f'{frame_width}x{frame_height}',
-            '-r', '30',
-            '-i', 'pipe:0',
-            '-f', 'lavfi',
-            '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-preset', preset,
-            '-b:v', bitrate,
-            '-maxrate', bitrate,
-            '-bufsize', '6000k',
-            '-g', '60',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-ar', '44100',
-            '-f', 'flv',
-            full_url
-        ]
-        
-        pipe = subprocess.Popen(
-            ffmpeg_cmd,
-            stdin=subprocess.PIPE,
-            bufsize=10**8
-        )
-        
-        print("YouTube streaming started!")
-        print(f"Streaming to: {stream_url}")
-        print(f"Resolution: {frame_width}x{frame_height}")
-        
-    except Exception as e:
-        print(f"Failed to start streaming: {e}")
-        import traceback
-        traceback.print_exc()
+    # Validate required YouTube streaming configuration before starting
+    youtube_config = config.get('youtube') if isinstance(config, dict) else None
+    if not isinstance(youtube_config, dict) or \
+       'stream_url' not in youtube_config or \
+       'stream_key' not in youtube_config:
+        print("Streaming disabled: missing YouTube 'stream_url' or 'stream_key' in configuration.")
+        STREAMING_ENABLED = False
         pipe = None
+    else:
+        try:
+            stream_url = youtube_config['stream_url']
+            stream_key = youtube_config['stream_key']
+            full_url = f"{stream_url}{stream_key}"
 
+            bitrate = config.get('streaming', {}).get('bitrate', '3000k')
+            preset = config.get('streaming', {}).get('preset', 'ultrafast')
+
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-y',
+                '-f', 'rawvideo',
+                '-vcodec', 'rawvideo',
+                '-pix_fmt', 'bgr24',
+                '-s', f'{frame_width}x{frame_height}',
+                '-r', '30',
+                '-i', 'pipe:0',
+                '-f', 'lavfi',
+                '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+                '-c:v', 'libx264',
+                '-pix_fmt', 'yuv420p',
+                '-preset', preset,
+                '-b:v', bitrate,
+                '-maxrate', bitrate,
+                '-bufsize', '6000k',
+                '-g', '60',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-ar', '44100',
+                '-f', 'flv',
+                full_url
+            ]
+
+            pipe = subprocess.Popen(
+                ffmpeg_cmd,
+                stdin=subprocess.PIPE,
+                bufsize=10**8
+            )
+
+            print("YouTube streaming started!")
+            print(f"Streaming to: {stream_url}")
+            print(f"Resolution: {frame_width}x{frame_height}")
+
+        except Exception as e:
+            print(f"Failed to start streaming: {e}")
+            import traceback
+            traceback.print_exc()
+            pipe = None
 def get_index_finger_tip(hand_landmarks):
     return (int(hand_landmarks[8].x * frame_width),
             int(hand_landmarks[8].y * frame_height))
@@ -291,7 +297,28 @@ while running:
             pipe.stdin.write(output.tobytes())
         except (BrokenPipeError, IOError) as e:
             print(f"Streaming error: {e}")
-            pipe = None
+            # Clean up the streaming process before dropping the reference
+            try:
+                if pipe.stdin:
+                    pipe.stdin.close()
+                try:
+                    pipe.terminate()
+                except Exception:
+                    # If terminate is not available or fails, proceed to kill in wait branch
+                    pass
+                try:
+                    pipe.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pipe.kill()
+                    try:
+                        pipe.wait()
+                    except Exception:
+                        pass
+            except Exception:
+                # Swallow any cleanup errors; we are already handling a failure path
+                pass
+            finally:
+                pipe = None
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
