@@ -71,7 +71,7 @@ gesture_recognizer_options = vision.GestureRecognizerOptions(
     running_mode=vision.RunningMode.VIDEO,
     num_hands=2,
     min_hand_detection_confidence=0.5,
-    min_hand_presence_confidence=0.5,
+    min_hand_presence_confidence=0.5, # in video mode, if 
     min_tracking_confidence=0.5,
 )
 gesture_recognizer = vision.GestureRecognizer.create_from_options(gesture_recognizer_options)
