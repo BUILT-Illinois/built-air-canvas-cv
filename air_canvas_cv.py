@@ -4,6 +4,7 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 import time
+from datetime import datetime
 import warnings
 import os
 import urllib.request
@@ -26,7 +27,7 @@ def create_ui(width, height):
     button_width = min(50, width // (len(colors) + 2))
     button_step = button_width + 10
     button_x0 = 10  # first button start
-    button_boxes = []  
+    button_boxes = []
 
     for i, color in enumerate(colors):
         x = button_x0 + i * button_step
@@ -51,30 +52,6 @@ def create_ui(width, height):
     return ui, button_boxes, clear_box
 
 
-def get_hand_landmarker_model():
-    model_path = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
-    if not os.path.exists(model_path):
-        model_url = (
-            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-            "hand_landmarker/float16/1/hand_landmarker.task"
-        )
-        print("Downloading hand landmarker model...")
-        urllib.request.urlretrieve(model_url, model_path)
-    return model_path
-
-
-model_path = get_hand_landmarker_model()
-base_options = mp_python.BaseOptions(model_asset_path=model_path)
-hand_landmarker_options = vision.HandLandmarkerOptions(
-    base_options=base_options,
-    running_mode=vision.RunningMode.VIDEO,
-    num_hands=2,
-    min_hand_detection_confidence=0.5,
-    min_hand_presence_confidence=0.5,
-    min_tracking_confidence=0.5,
-)
-hand_landmarker = vision.HandLandmarker.create_from_options(hand_landmarker_options)
-
 # Gesture recognition
 def get_gesture_recognizer_model():
     model_path = os.path.join(os.path.dirname(__file__), "gesture_recognizer.task")
@@ -87,19 +64,17 @@ def get_gesture_recognizer_model():
         urllib.request.urlretrieve(model_url, model_path)
     return model_path
 
-# gesture recog. setup
+# gesture recognition setup
 gesture_model_path = get_gesture_recognizer_model()
 gesture_recognizer_options = vision.GestureRecognizerOptions(
     base_options=mp_python.BaseOptions(model_asset_path=gesture_model_path),
     running_mode=vision.RunningMode.VIDEO,
-    num_hands=1,
+    num_hands=2,
     min_hand_detection_confidence=0.5,
     min_hand_presence_confidence=0.5, # in video mode, if 
     min_tracking_confidence=0.5,
 )
 gesture_recognizer = vision.GestureRecognizer.create_from_options(gesture_recognizer_options)
-
-
 
 
 def open_camera():
@@ -124,6 +99,7 @@ if cap is None:
     raise SystemExit(1)
 
 # Determines size of window screen
+# Note: Lowering resolution can improve performance but reduces detection accuracy.
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -163,9 +139,11 @@ def in_box(pt, box):
     x1, y1, x2, y2 = box
     return (x1 <= x <= x2) and (y1 <= y <= y2)
 
+# State management for drawing
 prev_point = {}
-min_distance = 5
 is_drawing = {}
+
+min_distance = 5
 line_thickness = 2
 video_start_time = time.time()
 
@@ -198,6 +176,20 @@ HAND_CONNECTIONS = [
     (0,17)                            # palm
 ]
 
+def clear_canvas():
+    canvas.fill(255)
+    for p in points:
+        p.clear()
+    for hand_idx in prev_point:
+        prev_point[hand_idx] = None
+        is_drawing[hand_idx] = False
+
+def save_drawing():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"Air_Sketch_drawing_{timestamp}.png"
+    cv2.imwrite(filename, canvas)
+    print(f"Drawing saved as '{filename}'")
+
 while running: 
     ret, frame = cap.read()
     if not ret or frame is None:
@@ -210,15 +202,20 @@ while running:
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
     timestamp_ms = int((time.time() - video_start_time) * 1000)
     results = gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
+    
+    # reset HUD display each frame to prevent stale gesture info when hands leave frame
+    current_gesture = "None"
+    gesture_confidence = 0.0
 
     if results.hand_landmarks:
-        for hand_index, hand_landmarks in enumerate(results.hand_landmarks):
-            if hand_index not in prev_point:
+        # Initialize per-hand state for any newly detected hands
+        for hand_index in range(len(results.hand_landmarks)):
+            if hand_index not in prev_point:    
                 prev_point[hand_index] = None
                 is_drawing[hand_index] = False
                 
         for idx, hand_landmarks in enumerate(results.hand_landmarks):
-            # Convert normalized coords → pixel coords
+            # Convert normalized coords -> pixel coords
             hand_points = []
             for lm in hand_landmarks:
                 x = int(lm.x * frame_width)
@@ -235,100 +232,86 @@ while running:
                     cv2.circle(frame, pt, 3, (255,0,0), -1)
             index_finger_tip = get_index_finger_tip(hand_landmarks)
 
+            # local per-hand gesture state
+            # allows each hand to act on its own gesture independently
+            hand_gesture = "None"
+            hand_confidence = 0.0
+
             # get gesture for this specific hand
             if results.gestures and idx < len(results.gestures):
                 gesture = results.gestures[idx][0]
-                current_gesture = gesture.category_name
-                gesture_confidence = gesture.score
-                # cv2.putText(output, f"Gesture: {gesture_name} ({score:.2f})", (10, frame_height - 40),
-                # cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2) # yellow
+                hand_gesture = gesture.category_name
+                hand_confidence = gesture.score
+                if hand_confidence >= gesture_confidence:
+                    current_gesture = hand_gesture
+                    gesture_confidence = hand_confidence
     
             # map gestures to (7) actions ["None", "Closed_Fist", "Open_Palm", "Pointing_Up", "Thumb_Down", "Thumb_Up", "Victory", "ILoveYou"].
-            if current_gesture == "Pointing_Up": # DRAWING
-                if index_finger_tip[1] <= ui_height:  # Toolbar area
-                    # Clear button
+            if hand_gesture == "Pointing_Up": # DRAWING
+                if index_finger_tip[1] <= ui_height:  # In toolbar area
                     if in_box(index_finger_tip, clear_box):
-                        for p in points:
-                            p.clear()
-                        canvas.fill(255)
-                        prev_point[hand_index] = None
-                        is_drawing[hand_index] = False
+                        clear_canvas()
                     else:
                         # Color buttons
                         for i, box in enumerate(color_button_boxes):
                             if in_box(index_finger_tip, box):
                                 colorIndex = i
                                 break
-                else:
-                    if not is_drawing[hand_index]:
-                        prev_point[hand_index] = index_finger_tip
-                        is_drawing[hand_index] = True
+                else:   # In drawing areas
+                    if not is_drawing[idx]:
+                        prev_point[idx] = index_finger_tip
+                        is_drawing[idx] = True
 
-                    if prev_point[hand_index] is not None:
-                        if np.linalg.norm(np.array(index_finger_tip) - np.array(prev_point[hand_index])) > min_distance:
-                            cv2.line(canvas, prev_point[hand_index], index_finger_tip, colors[colorIndex], line_thickness)
-                            prev_point[hand_index] = index_finger_tip
-            else:
-                prev_point[hand_index] = None
-                is_drawing[hand_index] = False
-                    if not is_drawing:
-                        prev_point = index_finger_tip
-                        is_drawing = True
+                    if prev_point[idx] is not None:
+                        if np.linalg.norm(np.array(index_finger_tip) - np.array(prev_point[idx])) > min_distance:
+                            cv2.line(canvas, prev_point[idx], index_finger_tip, colors[colorIndex], line_thickness)
+                            prev_point[idx] = index_finger_tip
 
-                    if prev_point is not None:
-                        if np.linalg.norm(np.array(index_finger_tip) - np.array(prev_point)) > min_distance:
-                            cv2.line(canvas, prev_point, index_finger_tip, colors[colorIndex], line_thickness)
-                            prev_point = index_finger_tip
-            elif current_gesture == "Open_Palm": # CLEAR CANVAS
+            elif hand_gesture == "Open_Palm": # CLEAR CANVAS
                 if not gesture_on_cooldown("Open_Palm"):
-                    canvas.fill(255)
-                    for p in points:
-                        p.clear()
-                    prev_point = None
-                    is_drawing = False
-            elif current_gesture == "Victory": # decide later
+                    clear_canvas()
+
+            elif hand_gesture == "Victory": # decide later
                 pass
-            elif current_gesture == "Thumb_Up": # same as '+' for now
+
+            elif hand_gesture == "Thumb_Up": # same as '+' for now
                 if not gesture_on_cooldown("Thumb_Up", cooldown=0.4):  
                     line_thickness = min(line_thickness + 1, 10)
-            elif current_gesture == "Thumb_Down": # same as '-' for now
+
+            elif hand_gesture == "Thumb_Down": # same as '-' for now
                 if not gesture_on_cooldown("Thumb_Down", cooldown=0.4):
                     line_thickness = max(line_thickness - 1, 1)
-            elif current_gesture == "ILoveYou": # same as 's' for now
+
+            elif hand_gesture == "ILoveYou": # same as 's' for now
                 if not gesture_on_cooldown("ILoveYou", cooldown=1.0): # adjust if necessary
-                    cv2.imwrite("Air_Sketch_drawing.png", canvas)
-                    print("Drawing saved as 'Air_Sketch_drawing.png'")
-            elif current_gesture == "Closed_Fist":
-                prev_point = None
-                is_drawing = False
-            else: # no gesture
-                prev_point = None
-                is_drawing = False
+                    save_drawing()
+
+            elif hand_gesture == "Closed_Fist":
+                prev_point[idx] = None
+                is_drawing[idx] = False
+
+            else: # no recognized gesture
+                prev_point[idx] = None
+                is_drawing[idx] = False
 
             cv2.circle(frame, index_finger_tip, 5, colors[colorIndex], -1)
+
     else: # no hand detected, reset gesture info
         current_gesture = "None"
         gesture_confidence = 0.0
-        prev_point = None
-        is_drawing = False
-
+        for hand_idx in prev_point:
+            prev_point[hand_idx] = None
+            is_drawing[hand_idx] = False
 
     output = frame.copy()
     draw_mask = np.any(canvas != 255, axis=2)
     output[draw_mask] = canvas[draw_mask]
     output[:ui_height, :] = ui
 
-
-    # gesture_name = ""
-    # if results.gestures:
-    #     gesture_name = results.gestures[0][0].category_name
-    #     score = results.gestures[0][0].score
     gesture_color = (0, 255, 0) # green if detected
     cv2.putText(output, f"Gesture: {current_gesture} ({gesture_confidence:.2f})",
                 (10, frame_height - 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, gesture_color, 2) 
-    
-
 
     current_time = time.time()
     dt = current_time - prev_time
@@ -352,6 +335,5 @@ while running:
         line_thickness = max(line_thickness - 1, 1)
 
 cap.release()
-hand_landmarker.close()
 gesture_recognizer.close()
 cv2.destroyAllWindows()
