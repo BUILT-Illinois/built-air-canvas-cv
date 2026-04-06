@@ -209,3 +209,5 @@ __marimo__/
 #AWS Certificates and Keys
 certs/
 *.pem*
+# Streaming configuration (contains sensitive stream keys)
+config.json
