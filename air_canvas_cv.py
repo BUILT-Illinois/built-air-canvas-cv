@@ -11,8 +11,25 @@ import urllib.request
 import json
 import subprocess
 
+# MQTT Imports
+try:
+    from mqtt_handler import MQTTHandler, format_hand_data
+    from config import (MQTT_ENABLED, MQTT_ENDPOINT, MQTT_CERT_PATH,
+                        MQTT_KEY_PATH, MQTT_CA_PATH, MQTT_TOPIC_PREFIX,
+                        DEVICE_ID, SEND_INTERVAL_MS)
+    MQTT_AVAILABLE = True
+except ImportError as e:
+    print(f"MQTT import failed: {e}")
+    print("MQTT modules not found. Running without MQTT streaming.")
+    MQTT_AVAILABLE = False
+    MQTT_ENABLED = False
+    DEVICE_ID = "default"
+    SEND_INTERVAL_MS = 100
+
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf.symbol_database")
 
+colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 0, 0)]
+color_names = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN", "Black"]
 # Load configuration
 def load_config():
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -49,6 +66,7 @@ colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (
 color_names = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN","Black"]
 colorIndex = 0
 points = [[] for _ in range(len(colors))]
+
 
 def create_ui(width, height):
     ui_height = height // 8
@@ -104,11 +122,27 @@ gesture_recognizer_options = vision.GestureRecognizerOptions(
     running_mode=vision.RunningMode.VIDEO,
     num_hands=2,
     min_hand_detection_confidence=0.5,
-    min_hand_presence_confidence=0.5, # in video mode, if 
+    min_hand_presence_confidence=0.5,
     min_tracking_confidence=0.5,
 )
 gesture_recognizer = vision.GestureRecognizer.create_from_options(gesture_recognizer_options)
 
+# Initialize MQTT
+mqtt_handler = None
+if MQTT_AVAILABLE and MQTT_ENABLED:
+    print("Initializing MQTT connection...")
+    mqtt_handler = MQTTHandler(
+        endpoint=MQTT_ENDPOINT,
+        cert_path=MQTT_CERT_PATH,
+        key_path=MQTT_KEY_PATH,
+        ca_path=MQTT_CA_PATH,
+        client_id=f"HandTracking-{DEVICE_ID}",
+        topic_prefix=MQTT_TOPIC_PREFIX
+    )
+    mqtt_handler.connect()
+    print(f"MQTT streaming: {'ENABLED' if mqtt_handler.connected else 'FAILED'}")
+else:
+    print("MQTT streaming: DISABLED")
 
 def open_camera():
     preferred_backend = cv2.CAP_DSHOW if os.name == "nt" else 0
@@ -137,7 +171,6 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_FPS, 30)
 
-# Read one frame to lock actual size
 ret, frame = cap.read()
 if not ret or frame is None:
     print("Error: Opened camera but failed to read a frame.")
@@ -147,8 +180,7 @@ if not ret or frame is None:
 frame = cv2.flip(frame, 1)
 frame_height, frame_width = frame.shape[:2]
 
-# Build UI and canvas based on actual size
-ui, color_button_boxes, clear_box = create_ui(frame_width, frame_height)    
+ui, color_button_boxes, clear_box = create_ui(frame_width, frame_height)
 ui_height = ui.shape[0]
 canvas = np.full((frame_height, frame_width, 3), 255, dtype=np.uint8)
 
@@ -216,9 +248,6 @@ def get_index_finger_tip(hand_landmarks):
     return (int(hand_landmarks[8].x * frame_width),
             int(hand_landmarks[8].y * frame_height))
 
-def is_index_finger_raised(hand_landmarks):
-    return hand_landmarks[8].y < hand_landmarks[6].y
-
 def is_only_index_finger_raised(hand_landmarks):
     index_up = hand_landmarks[8].y < hand_landmarks[6].y
     middle_up = hand_landmarks[12].y < hand_landmarks[10].y
@@ -251,12 +280,17 @@ COOLDOWN_SECS = 1.0
 def gesture_on_cooldown(gesture_name, cooldown=COOLDOWN_SECS):
     curr_time = time.time()
     last_time = gesture_cooldowns.get(gesture_name, 0)
-
     if curr_time - last_time < cooldown:
         return True
-    
     gesture_cooldowns[gesture_name] = curr_time
     return False
+
+last_mqtt_send_time = 0
+mqtt_send_interval = SEND_INTERVAL_MS / 1000.0 if MQTT_AVAILABLE and MQTT_ENABLED else 0
+
+while running:
+    current_gesture = "None"
+    gesture_confidence = 0.0
 
 
 HAND_CONNECTIONS = [
@@ -386,6 +420,28 @@ while running:
                 is_drawing[idx] = False
 
             cv2.circle(frame, index_finger_tip, 5, colors[colorIndex], -1)
+            # Send hand data via MQTT (rate-limited)
+        current_time = time.time()
+        if mqtt_handler and mqtt_handler.connected and (current_time - last_mqtt_send_time) >= mqtt_send_interval:
+            try:
+                hand_data = format_hand_data(
+                    results.hand_landmarks,
+                    frame_width,
+                    frame_height,
+                    colorIndex,
+                    color_names,
+                    is_drawing
+                )
+                mqtt_handler.publish(hand_data)
+            except Exception as e:
+                print(f"Error sending MQTT data: {e}")
+            last_mqtt_send_time = current_time
+            
+    else: # no hand detected, reset gesture info
+        current_gesture = "None"
+        gesture_confidence = 0.0
+        prev_point = None
+        is_drawing = False
 
     else: # no hand detected, reset gesture info
         current_gesture = "None"
@@ -401,16 +457,22 @@ while running:
 
     gesture_color = (0, 255, 0) # green if detected
     cv2.putText(output, f"Gesture: {current_gesture} ({gesture_confidence:.2f})",
-                (10, frame_height - 40),
+                (10, frame_height - 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, gesture_color, 2) 
 
     current_time = time.time()
     dt = current_time - prev_time
     fps = (1 / dt) if dt > 0 else 0
     prev_time = current_time
-
     cv2.putText(output, f"FPS: {int(fps)}", (10, frame_height - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    # MQTT status
+    if mqtt_handler:
+        mqtt_status = "MQTT: CONNECTED" if mqtt_handler.connected else "MQTT: DISCONNECTED"
+        mqtt_color = (0, 255, 0) if mqtt_handler.connected else (0, 0, 255)
+        cv2.putText(output, mqtt_status, (10, frame_height - 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, mqtt_color, 2)
 
     cv2.imshow("AirSketch", output)
     
@@ -455,6 +517,13 @@ while running:
         line_thickness = max(line_thickness - 1, 1)
 
 # Cleanup
+if mqtt_handler:
+    mqtt_handler.disconnect()
+
+hand_landmarker.close()
+gesture_recognizer.close()
+cap.release()
+cv2.destroyAllWindows()
 if pipe is not None:
     try:
         pipe.stdin.close()
