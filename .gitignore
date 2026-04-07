@@ -211,3 +211,4 @@ certs/
 *.pem*
 # Streaming configuration (contains sensitive stream keys)
 config.json
+.claude
