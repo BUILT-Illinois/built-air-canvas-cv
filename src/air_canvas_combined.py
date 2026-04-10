@@ -140,7 +140,7 @@ def main():
     frame_height, frame_width = frame.shape[:2]
 
     # UI toolbar
-    toolbar, color_button_boxes, clear_box = create_toolbar(frame_width, frame_height)
+    toolbar, clear_box = create_toolbar(frame_width, frame_height)
     toolbar_height = toolbar.shape[0]
 
     # Drawing state
@@ -243,11 +243,6 @@ def main():
                             # Toolbar interaction
                             if point_in_box(index_tip, clear_box):
                                 state.clear_canvas()
-                            else:
-                                for i, box in enumerate(color_button_boxes):
-                                    if point_in_box(index_tip, box):
-                                        state.color_index = i
-                                        break
                         else:
                             state.start_drawing(idx, index_tip)
 
@@ -257,14 +252,6 @@ def main():
 
                     elif hand_gesture == "Victory":
                         pass
-
-                    elif hand_gesture == "Thumb_Up":
-                        if not state.gesture_on_cooldown("Thumb_Up", cooldown=0.4):
-                            state.increase_thickness()
-
-                    elif hand_gesture == "Thumb_Down":
-                        if not state.gesture_on_cooldown("Thumb_Down", cooldown=0.4):
-                            state.decrease_thickness()
 
                     elif hand_gesture == "ILoveYou":
                         if not state.gesture_on_cooldown("ILoveYou", cooldown=1.0):
@@ -434,14 +421,15 @@ if __name__ == "__main__":
     print("  Hand Gestures:")
     print("    - Pointing Up    : Draw")
     print("    - Open Palm      : Clear canvas")
-    print("    - Thumb Up/Down  : Adjust thickness")
     print("    - ILoveYou       : Save drawing")
     print()
     print("  Keyboard:")
     print("    - Q   : Quit")
     print("    - S   : Save drawing")
-    print("    - +/- : Thickness")
     print("    - R   : Recalibrate IMU wand")
+    print()
+    print("  Website:")
+    print("    - Use website buttons to change color and brush size")
     print()
     print("=" * 60)
     print()

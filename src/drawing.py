@@ -115,9 +115,9 @@ class DrawingState:
 
     def draw_imu_wand(self, point, pressure):
         """
-        Draw with IMU wand using pressure-sensitive strokes.
+        Draw with IMU wand using fixed thickness.
         point: (x, y) tuple
-        pressure: float 0..1
+        pressure: float 0..1 (unused, kept for compatibility)
         """
         if not self.imu_is_drawing:
             self.imu_prev_point = point
@@ -128,16 +128,12 @@ class DrawingState:
             # Check minimum distance
             dist = np.linalg.norm(np.array(point) - np.array(self.imu_prev_point))
             if dist > self.min_distance:
-                # Pressure-sensitive thickness (0.3x to 1.0x base thickness)
-                pressure_factor = 0.3 + pressure * 0.7
-                thickness = max(1, int(self.line_thickness * pressure_factor))
-
                 cv2.line(
                     self.canvas,
                     self.imu_prev_point,
                     point,
                     COLORS[self.color_index],
-                    thickness
+                    self.line_thickness
                 )
                 self.imu_prev_point = point
 

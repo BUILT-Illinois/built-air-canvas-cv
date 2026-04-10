@@ -224,7 +224,7 @@ class IMUFusion:
         # pitch → Y: positive pitch = move down (screen coords)
         scale = self.position_scale
         raw_x = 0.5 - (delta_yaw * scale) / self.frame_width
-        raw_y = 0.5 - (delta_pitch * scale) / self.frame_height
+        raw_y = 0.5 + (delta_pitch * scale) / self.frame_height
 
         # ── Dead zone ──
         if (abs(raw_x - self.smooth_x) * self.frame_width < 1.0 and
