@@ -35,6 +35,9 @@ warnings.filterwarnings(
     "ignore", category=UserWarning, module="google.protobuf.symbol_database"
 )
 
+WINDOW_MAIN = "AirSketch"
+WINDOW_SKELETON = "Hand Skeleton"
+
 
 # ------------------------------------------------------------------
 # Initialization
@@ -80,8 +83,24 @@ def main():
     frame = cv2.flip(frame, 1)
     frame_height, frame_width = frame.shape[:2]
 
+    # Create windows explicitly (macOS can otherwise stack/hide one window).
+    cv2.namedWindow(WINDOW_MAIN, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(WINDOW_SKELETON, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW_MAIN, frame_width, frame_height)
+    cv2.resizeWindow(WINDOW_SKELETON, frame_width, frame_height)
+
+    # Positions windows on screen (adjust manually as needed)
+    main_x, main_y = 20, 0
+    cv2.moveWindow(WINDOW_MAIN, main_x, main_y)
+    skeleton_x, skeleton_y = main_x + frame_width // 3, main_y + frame_height // 4
+    cv2.moveWindow(WINDOW_SKELETON, skeleton_x, skeleton_y)
+
+    # skeleton frame starts black every frame
+    # skeleton_frame = np.zeros_like(frame)
+
     # UI toolbar
-    toolbar, color_button_boxes, clear_box = create_toolbar(frame_width, frame_height)
+    # toolbar, color_button_boxes, clear_box = create_toolbar(frame_width, frame_height)
+    toolbar, clear_box = create_toolbar(frame_width, frame_height)
     toolbar_height = toolbar.shape[0]
 
     # Drawing state
@@ -128,22 +147,25 @@ def main():
             current_gesture = "None"
             gesture_confidence = 0.0
 
+            # Skeleton window: separate copy of the camera feed
+            skeleton_frame = np.zeros_like(frame)
+
             if results.hand_landmarks:
                 # Ensure per-hand state exists
                 for hand_index in range(len(results.hand_landmarks)):
                     state.ensure_hand(hand_index)
 
                 for idx, hand_landmarks in enumerate(results.hand_landmarks):
-                    # Draw hand skeleton on camera feed
+                    # Draw hand skeleton on the separate skeleton frame only
                     hand_points = landmarks_to_pixels(
                         hand_landmarks, frame_width, frame_height
                     )
                     if len(hand_points) == 21:
                         for start, end in HAND_CONNECTIONS:
-                            cv2.line(frame, hand_points[start],
+                            cv2.line(skeleton_frame, hand_points[start],
                                      hand_points[end], (0, 255, 0), 2)
                         for pt in hand_points:
-                            cv2.circle(frame, pt, 3, (255, 0, 0), -1)
+                            cv2.circle(skeleton_frame, pt, 3, (255, 0, 0), -1)
 
                     index_tip = get_index_finger_tip(
                         hand_landmarks, frame_width, frame_height
@@ -166,11 +188,12 @@ def main():
                             # Toolbar interaction
                             if point_in_box(index_tip, clear_box):
                                 state.clear_canvas()
-                            else:
-                                for i, box in enumerate(color_button_boxes):
-                                    if point_in_box(index_tip, box):
-                                        state.color_index = i
-                                        break
+                            # NOTE: Color selection was removed from toolbar UI. Managed from the website directly.
+                            # else:
+                            #     # for i, box in enumerate(color_button_boxes):
+                            #     #     if point_in_box(index_tip, box):
+                            #     #         state.color_index = i
+                            #     #         break
                         else:
                             state.start_drawing(idx, index_tip)
 
@@ -253,8 +276,9 @@ def main():
                 mqtt_color = (0, 255, 0) if mqtt_handler.connected else (0, 0, 255)
                 cv2.putText(output, mqtt_status, (10, frame_height - 35),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, mqtt_color, 2)
-
-            cv2.imshow("AirSketch", output)
+            
+            cv2.imshow(WINDOW_SKELETON, skeleton_frame) # Set black background for skeleton window
+            cv2.imshow(WINDOW_MAIN, output)
 
             # Hand the frame off to the dedicated streaming thread.
             # push_frame() is non-blocking — the thread handles timing.
@@ -271,7 +295,8 @@ def main():
                 state.increase_thickness()
             elif key == ord("-"):
                 state.decrease_thickness()
-
+    except KeyboardInterrupt:
+        print("\nInterruped by user (Ctrl+C). Exiting...")
     finally:
         # Cleanup
         if mqtt_handler:

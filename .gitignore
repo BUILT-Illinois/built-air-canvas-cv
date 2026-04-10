@@ -212,3 +212,6 @@ certs/
 # Streaming configuration (contains sensitive stream keys)
 config.json
 .claude
+
+# Local output artifacts
+outputs/
