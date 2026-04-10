@@ -439,9 +439,17 @@ def _stop_pipe(pipe) -> None:
 # ---------------------------------------------------------------------------
 
 def write_frame(pipe, frame):
-    """Deprecated: use Streamer.push_frame() instead."""
+    """Deprecated: use Streamer.push_frame() instead.
+
+    Accepts either a raw Popen pipe (legacy) or a Streamer instance so that
+    existing callers (e.g. air_canvas_combined.py) work without modification
+    after start_streaming() was updated to return a Streamer.
+    """
     if pipe is None:
         return None
+    if isinstance(pipe, Streamer):
+        pipe.push_frame(frame)
+        return pipe
     try:
         pipe.stdin.write(frame.tobytes())
         pipe.stdin.flush()
