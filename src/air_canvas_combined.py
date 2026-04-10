@@ -34,8 +34,7 @@ try:
     from mqtt_handler import MQTTHandler, MQTTSubscriber, format_hand_data
     from config import (
         MQTT_ENABLED, MQTT_ENDPOINT, MQTT_CERT_PATH,
-        MQTT_KEY_PATH, MQTT_CA_PATH, MQTT_TOPIC_PREFIX,
-        MQTT_TOPIC_IMU_TIP, MQTT_TOPIC_IMU_BASE,
+        MQTT_KEY_PATH, MQTT_CA_PATH, MQTT_TOPIC_CV, MQTT_TOPIC_WAND,
         DEVICE_ID, SEND_INTERVAL_MS,
         IMU_POSITION_SCALE, IMU_SMOOTHING, IMU_DEAD_ZONE_RAD,
         IMU_PRESSURE_ROLL_MAX, IMU_DRAW_THRESHOLD, IMU_CALIBRATION_SAMPLES,
@@ -59,19 +58,19 @@ warnings.filterwarnings(
 # ------------------------------------------------------------------
 
 def init_mqtt_publisher():
-    """Connect to AWS IoT Core for publishing hand tracking data."""
+    """Connect to AWS IoT Core for publishing CV data."""
     if not (MQTT_AVAILABLE and MQTT_ENABLED):
         print("MQTT publishing: DISABLED")
         return None
 
-    print("Initializing MQTT publisher (hand tracking)...")
+    print("Initializing MQTT publisher (CV data)...")
     handler = MQTTHandler(
         endpoint=MQTT_ENDPOINT,
         cert_path=MQTT_CERT_PATH,
         key_path=MQTT_KEY_PATH,
         ca_path=MQTT_CA_PATH,
-        client_id=f"HandTracking-{DEVICE_ID}",
-        topic_prefix=MQTT_TOPIC_PREFIX,
+        client_id=f"CV-{DEVICE_ID}",
+        topic=MQTT_TOPIC_CV,
     )
     handler.connect()
     print(f"MQTT publisher: {'ENABLED' if handler.connected else 'FAILED'}")
@@ -79,12 +78,12 @@ def init_mqtt_publisher():
 
 
 def init_mqtt_subscriber(fusion):
-    """Connect to AWS IoT Core for subscribing to IMU data."""
+    """Connect to AWS IoT Core for subscribing to wand data."""
     if not (MQTT_AVAILABLE and MQTT_ENABLED):
         print("MQTT subscriber: DISABLED")
         return None
 
-    print("Initializing MQTT subscriber (IMU wand)...")
+    print("Initializing MQTT subscriber (wand data)...")
     subscriber = MQTTSubscriber(
         endpoint=MQTT_ENDPOINT,
         cert_path=MQTT_CERT_PATH,
@@ -95,25 +94,27 @@ def init_mqtt_subscriber(fusion):
     subscriber.connect()
 
     if subscriber.connected:
-        # Subscribe to IMU topics with callbacks
-        def on_imu_tip(topic, msg):
+        # Subscribe to unified wand topic
+        def on_wand_data(topic, msg):
             try:
-                quat = msg["data"]["quaternion"]
-                ts = msg["timestamp"]
-                fusion.update_tip(quat, ts)
-            except KeyError as e:
-                print(f"[IMU TIP] Missing field: {e}")
+                ts = msg.get("timestamp", 0)
+                data = msg.get("data", {})
 
-        def on_imu_base(topic, msg):
-            try:
-                quat = msg["data"]["quaternion"]
-                ts = msg["timestamp"]
-                fusion.update_base(quat, ts)
-            except KeyError as e:
-                print(f"[IMU BASE] Missing field: {e}")
+                # Extract tip and base quaternions from combined message
+                tip_quat = data.get("tip", {}).get("quaternion")
+                base_quat = data.get("base", {}).get("quaternion")
 
-        subscriber.subscribe(MQTT_TOPIC_IMU_TIP, on_imu_tip)
-        subscriber.subscribe(MQTT_TOPIC_IMU_BASE, on_imu_base)
+                if tip_quat:
+                    fusion.update_tip(tip_quat, ts)
+                if base_quat:
+                    fusion.update_base(base_quat, ts)
+
+            except KeyError as e:
+                print(f"[WAND] Missing field: {e}")
+            except Exception as e:
+                print(f"[WAND] Error processing message: {e}")
+
+        subscriber.subscribe(MQTT_TOPIC_WAND, on_wand_data)
 
     print(f"MQTT subscriber: {'ENABLED' if subscriber.connected else 'FAILED'}")
     return subscriber
