@@ -46,12 +46,12 @@ class DrawingState:
 
     def save_drawing(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"Air_Sketch_drawing_{timestamp}.png"
+        filename = f"../outputs/screenshots/Air_Sketch_drawing_{timestamp}.png"
         cv2.imwrite(filename, self.canvas)
         print(f"Drawing saved as '{filename}'")
 
     def save_drawing_default(self):
-        cv2.imwrite("Air_Sketch_drawing.png", self.canvas)
+        cv2.imwrite("../outputs/screenshots/Air_Sketch_drawing.png", self.canvas)
         print("Drawing saved as 'Air_Sketch_drawing.png'")
 
     # ------------------------------------------------------------------

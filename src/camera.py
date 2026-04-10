@@ -8,8 +8,8 @@ def open_camera(width=480, height=480, fps=30):
 
     for idx in range(4):
         cap = (cv2.VideoCapture(idx, preferred_backend)
-               if preferred_backend != 0
-               else cv2.VideoCapture(idx))
+            if preferred_backend != 0
+            else cv2.VideoCapture(idx))
         if not cap.isOpened():
             cap.release()
             continue
