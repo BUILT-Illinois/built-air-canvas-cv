@@ -13,7 +13,7 @@ from hand_tracking import (
     get_index_finger_tip,
     landmarks_to_pixels,
 )
-from streaming import load_config, start_streaming, stop_streaming, write_frame
+from streaming import load_config, start_streaming, stop_streaming
 from ui import COLORS, COLOR_NAMES, create_toolbar, point_in_box
 
 # MQTT imports (optional dependency)
@@ -98,7 +98,7 @@ def main():
 
     # Streaming
     app_config = load_config()
-    pipe = start_streaming(app_config, frame_width, frame_height)
+    streamer = start_streaming(app_config, frame_width, frame_height)
 
     # Timing
     video_start_time = time.time()
@@ -256,8 +256,10 @@ def main():
 
             cv2.imshow("AirSketch", output)
 
-            # Stream frame
-            pipe = write_frame(pipe, output)
+            # Hand the frame off to the dedicated streaming thread.
+            # push_frame() is non-blocking — the thread handles timing.
+            if streamer is not None:
+                streamer.push_frame(output)
 
             # Keyboard shortcuts
             key = cv2.waitKey(1) & 0xFF
@@ -277,7 +279,7 @@ def main():
         gesture_recognizer.close()
         cap.release()
         cv2.destroyAllWindows()
-        stop_streaming(pipe)
+        stop_streaming(streamer)
 
 
 if __name__ == "__main__":
