@@ -134,11 +134,12 @@ class MQTTSubscriber:
                 print(f"[MQTT SUB] Callback error on {topic}: {e}")
 
         try:
-            self.connection.subscribe(
+            subscribe_future, _ = self.connection.subscribe(
                 topic=topic,
                 qos=mqtt.QoS.AT_LEAST_ONCE,
                 callback=_on_message,
             )
+            subscribe_future.result(timeout=10)
             self.subscriptions[topic] = callback
             print(f"[MQTT SUB] Subscribed to: {topic}")
         except Exception as e:

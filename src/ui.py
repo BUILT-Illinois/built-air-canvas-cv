@@ -10,9 +10,31 @@ COLORS = [
     (255, 0, 255),  # Magenta
     (255, 255, 0),  # Cyan
     (0, 0, 0),      # Black
+    (0, 165, 255),  # Orange
+    (0, 255, 128),  # Lime
 ]
 
-COLOR_NAMES = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN", "Black"]
+COLOR_NAMES = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN", "Black", "ORANGE", "LIME"]
+
+# Map website color names (lowercase) to COLORS indices
+WEB_COLOR_MAP = {
+    "red": 0,
+    "green": 1,
+    "blue": 2,
+    "yellow": 3,
+    "magenta": 4,
+    "cyan": 5,
+    "black": 6,
+    "orange": 7,
+    "lime": 8,
+}
+
+# Map website brush size names to line thickness values
+WEB_BRUSH_SIZE_MAP = {
+    "small": 1,
+    "medium": 3,
+    "large": 6,
+}
 
 
 def create_toolbar(width, height):

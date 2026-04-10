@@ -23,6 +23,9 @@ SEND_INTERVAL_MS = 100  # Send data every 100ms (10 times/second)
 # Subscriber: IMU Wand data
 MQTT_TOPIC_WAND = "air-canvas/data/wand"
 
+# Subscriber: Web UI brush requests (color/size changes)
+MQTT_TOPIC_REQUESTS = "air-canvas/requests"
+
 # Legacy IMU topics (if still needed for separate tip/base)
 MQTT_TOPIC_IMU_TIP = "air-canvas/imu/tip"
 MQTT_TOPIC_IMU_BASE = "air-canvas/imu/base"

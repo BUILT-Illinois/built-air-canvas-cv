@@ -26,7 +26,7 @@ from hand_tracking import (
     landmarks_to_pixels,
 )
 from streaming import load_config, start_streaming, stop_streaming, write_frame
-from ui import COLORS, COLOR_NAMES, create_toolbar, point_in_box
+from ui import COLORS, COLOR_NAMES, WEB_COLOR_MAP, WEB_BRUSH_SIZE_MAP, create_toolbar, point_in_box
 from imu_fusion import IMUFusion
 
 # MQTT imports
@@ -35,6 +35,7 @@ try:
     from config import (
         MQTT_ENABLED, MQTT_ENDPOINT, MQTT_CERT_PATH,
         MQTT_KEY_PATH, MQTT_CA_PATH, MQTT_TOPIC_CV, MQTT_TOPIC_WAND,
+        MQTT_TOPIC_REQUESTS,
         DEVICE_ID, SEND_INTERVAL_MS,
         IMU_POSITION_SCALE, IMU_SMOOTHING, IMU_DEAD_ZONE_RAD,
         IMU_PRESSURE_ROLL_MAX, IMU_DRAW_THRESHOLD, IMU_CALIBRATION_SAMPLES,
@@ -123,6 +124,55 @@ def init_mqtt_subscriber(fusion):
     return subscriber
 
 
+def init_brush_request_subscriber(state, existing_subscriber=None):
+    """Subscribe to web UI brush requests (color/size changes)."""
+    if not (MQTT_AVAILABLE and MQTT_ENABLED):
+        print("[BRUSH] MQTT not available, skipping brush requests")
+        return None
+
+    # Reuse existing subscriber or create a new one
+    subscriber = existing_subscriber
+    if not subscriber or not subscriber.connected:
+        print("[BRUSH] Creating dedicated subscriber for brush requests...")
+        subscriber = MQTTSubscriber(
+            endpoint=MQTT_ENDPOINT,
+            cert_path=MQTT_CERT_PATH,
+            key_path=MQTT_KEY_PATH,
+            ca_path=MQTT_CA_PATH,
+            client_id=f"BrushRequests-{DEVICE_ID}",
+        )
+        subscriber.connect()
+
+    if not subscriber.connected:
+        print("[BRUSH] Failed to connect subscriber")
+        return None
+
+    def on_brush_request(topic, msg):
+        try:
+            print(f"[BRUSH] Raw message: {msg}")
+
+            # Handle wrapped envelope (e.g. {"data": {"color":...}}) or flat payload
+            data = msg.get("data", msg) if isinstance(msg, dict) else msg
+
+            color = data.get("color", "").lower()
+            brush_size = data.get("brushSize", "").lower()
+
+            if color in WEB_COLOR_MAP:
+                state.color_index = WEB_COLOR_MAP[color]
+                print(f"[BRUSH] Color → {color}")
+
+            if brush_size in WEB_BRUSH_SIZE_MAP:
+                state.line_thickness = WEB_BRUSH_SIZE_MAP[brush_size]
+                print(f"[BRUSH] Size → {brush_size} (thickness={state.line_thickness})")
+
+        except Exception as e:
+            print(f"[BRUSH] Error processing request: {e}")
+
+    subscriber.subscribe(MQTT_TOPIC_REQUESTS, on_brush_request)
+    print(f"[BRUSH] Listening for brush requests on {MQTT_TOPIC_REQUESTS}")
+    return subscriber
+
+
 # ------------------------------------------------------------------
 # Main loop
 # ------------------------------------------------------------------
@@ -185,6 +235,9 @@ def main():
 
     # MQTT subscriber (IMU wand)
     mqtt_subscriber = init_mqtt_subscriber(imu_fusion)
+
+    # MQTT subscriber (brush requests from website)
+    brush_subscriber = init_brush_request_subscriber(state, mqtt_subscriber)
 
     # Streaming
     app_config = load_config()
@@ -426,6 +479,8 @@ def main():
             mqtt_publisher.disconnect()
         if mqtt_subscriber:
             mqtt_subscriber.disconnect()
+        if brush_subscriber and brush_subscriber is not mqtt_subscriber:
+            brush_subscriber.disconnect()
         gesture_recognizer.close()
         cap.release()
         cv2.destroyAllWindows()
