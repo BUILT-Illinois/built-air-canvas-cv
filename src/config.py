@@ -15,11 +15,15 @@ MQTT_CERT_PATH = "certs/device-certificate.pem.crt"
 MQTT_KEY_PATH = "certs/device-private.pem.key"
 MQTT_CA_PATH = "certs/AmazonRootCA1.pem"
 
-# Hand Tracking Topics (publisher)
-MQTT_TOPIC_PREFIX = f"handtracking/{DEVICE_ID}"
+# MQTT Topics
+# Publisher: Computer Vision (hand tracking) data
+MQTT_TOPIC_CV = "air-canvas/data/cv"
 SEND_INTERVAL_MS = 100  # Send data every 100ms (10 times/second)
 
-# IMU Wand Topics (subscriber)
+# Subscriber: IMU Wand data
+MQTT_TOPIC_WAND = "air-canvas/data/wand"
+
+# Legacy IMU topics (if still needed for separate tip/base)
 MQTT_TOPIC_IMU_TIP = "air-canvas/imu/tip"
 MQTT_TOPIC_IMU_BASE = "air-canvas/imu/base"
 

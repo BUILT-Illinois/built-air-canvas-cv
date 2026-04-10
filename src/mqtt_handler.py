@@ -6,15 +6,15 @@ from awscrt import mqtt
 from awsiot import mqtt_connection_builder
 
 class MQTTHandler:
-    """MQTT Publisher - publishes hand tracking data to AWS IoT Core."""
+    """MQTT Publisher - publishes CV/hand tracking data to AWS IoT Core."""
 
-    def __init__(self, endpoint, cert_path, key_path, ca_path, client_id, topic_prefix):
+    def __init__(self, endpoint, cert_path, key_path, ca_path, client_id, topic):
         self.endpoint = endpoint
         self.cert_path = cert_path
         self.key_path = key_path
         self.ca_path = ca_path
         self.client_id = client_id
-        self.topic = f"{topic_prefix}/data"
+        self.topic = topic
         self.connection = None
         self.connected = False
 

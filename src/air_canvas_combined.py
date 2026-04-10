@@ -34,8 +34,7 @@ try:
     from mqtt_handler import MQTTHandler, MQTTSubscriber, format_hand_data
     from config import (
         MQTT_ENABLED, MQTT_ENDPOINT, MQTT_CERT_PATH,
-        MQTT_KEY_PATH, MQTT_CA_PATH, MQTT_TOPIC_PREFIX,
-        MQTT_TOPIC_IMU_TIP, MQTT_TOPIC_IMU_BASE,
+        MQTT_KEY_PATH, MQTT_CA_PATH, MQTT_TOPIC_CV, MQTT_TOPIC_WAND,
         DEVICE_ID, SEND_INTERVAL_MS,
         IMU_POSITION_SCALE, IMU_SMOOTHING, IMU_DEAD_ZONE_RAD,
         IMU_PRESSURE_ROLL_MAX, IMU_DRAW_THRESHOLD, IMU_CALIBRATION_SAMPLES,
@@ -59,19 +58,19 @@ warnings.filterwarnings(
 # ------------------------------------------------------------------
 
 def init_mqtt_publisher():
-    """Connect to AWS IoT Core for publishing hand tracking data."""
+    """Connect to AWS IoT Core for publishing CV data."""
     if not (MQTT_AVAILABLE and MQTT_ENABLED):
         print("MQTT publishing: DISABLED")
         return None
 
-    print("Initializing MQTT publisher (hand tracking)...")
+    print("Initializing MQTT publisher (CV data)...")
     handler = MQTTHandler(
         endpoint=MQTT_ENDPOINT,
         cert_path=MQTT_CERT_PATH,
         key_path=MQTT_KEY_PATH,
         ca_path=MQTT_CA_PATH,
-        client_id=f"HandTracking-{DEVICE_ID}",
-        topic_prefix=MQTT_TOPIC_PREFIX,
+        client_id=f"CV-{DEVICE_ID}",
+        topic=MQTT_TOPIC_CV,
     )
     handler.connect()
     print(f"MQTT publisher: {'ENABLED' if handler.connected else 'FAILED'}")
@@ -79,12 +78,12 @@ def init_mqtt_publisher():
 
 
 def init_mqtt_subscriber(fusion):
-    """Connect to AWS IoT Core for subscribing to IMU data."""
+    """Connect to AWS IoT Core for subscribing to wand data."""
     if not (MQTT_AVAILABLE and MQTT_ENABLED):
         print("MQTT subscriber: DISABLED")
         return None
 
-    print("Initializing MQTT subscriber (IMU wand)...")
+    print("Initializing MQTT subscriber (wand data)...")
     subscriber = MQTTSubscriber(
         endpoint=MQTT_ENDPOINT,
         cert_path=MQTT_CERT_PATH,
@@ -95,25 +94,27 @@ def init_mqtt_subscriber(fusion):
     subscriber.connect()
 
     if subscriber.connected:
-        # Subscribe to IMU topics with callbacks
-        def on_imu_tip(topic, msg):
+        # Subscribe to unified wand topic
+        def on_wand_data(topic, msg):
             try:
-                quat = msg["data"]["quaternion"]
-                ts = msg["timestamp"]
-                fusion.update_tip(quat, ts)
-            except KeyError as e:
-                print(f"[IMU TIP] Missing field: {e}")
+                ts = msg.get("timestamp", 0)
+                data = msg.get("data", {})
 
-        def on_imu_base(topic, msg):
-            try:
-                quat = msg["data"]["quaternion"]
-                ts = msg["timestamp"]
-                fusion.update_base(quat, ts)
-            except KeyError as e:
-                print(f"[IMU BASE] Missing field: {e}")
+                # Extract tip and base quaternions from combined message
+                tip_quat = data.get("tip", {}).get("quaternion")
+                base_quat = data.get("base", {}).get("quaternion")
 
-        subscriber.subscribe(MQTT_TOPIC_IMU_TIP, on_imu_tip)
-        subscriber.subscribe(MQTT_TOPIC_IMU_BASE, on_imu_base)
+                if tip_quat:
+                    fusion.update_tip(tip_quat, ts)
+                if base_quat:
+                    fusion.update_base(base_quat, ts)
+
+            except KeyError as e:
+                print(f"[WAND] Missing field: {e}")
+            except Exception as e:
+                print(f"[WAND] Error processing message: {e}")
+
+        subscriber.subscribe(MQTT_TOPIC_WAND, on_wand_data)
 
     print(f"MQTT subscriber: {'ENABLED' if subscriber.connected else 'FAILED'}")
     return subscriber
@@ -140,7 +141,7 @@ def main():
     frame_height, frame_width = frame.shape[:2]
 
     # UI toolbar
-    toolbar, color_button_boxes, clear_box = create_toolbar(frame_width, frame_height)
+    toolbar, clear_box = create_toolbar(frame_width, frame_height)
     toolbar_height = toolbar.shape[0]
 
     # Drawing state
@@ -243,11 +244,6 @@ def main():
                             # Toolbar interaction
                             if point_in_box(index_tip, clear_box):
                                 state.clear_canvas()
-                            else:
-                                for i, box in enumerate(color_button_boxes):
-                                    if point_in_box(index_tip, box):
-                                        state.color_index = i
-                                        break
                         else:
                             state.start_drawing(idx, index_tip)
 
@@ -257,14 +253,6 @@ def main():
 
                     elif hand_gesture == "Victory":
                         pass
-
-                    elif hand_gesture == "Thumb_Up":
-                        if not state.gesture_on_cooldown("Thumb_Up", cooldown=0.4):
-                            state.increase_thickness()
-
-                    elif hand_gesture == "Thumb_Down":
-                        if not state.gesture_on_cooldown("Thumb_Down", cooldown=0.4):
-                            state.decrease_thickness()
 
                     elif hand_gesture == "ILoveYou":
                         if not state.gesture_on_cooldown("ILoveYou", cooldown=1.0):
@@ -434,14 +422,15 @@ if __name__ == "__main__":
     print("  Hand Gestures:")
     print("    - Pointing Up    : Draw")
     print("    - Open Palm      : Clear canvas")
-    print("    - Thumb Up/Down  : Adjust thickness")
     print("    - ILoveYou       : Save drawing")
     print()
     print("  Keyboard:")
     print("    - Q   : Quit")
     print("    - S   : Save drawing")
-    print("    - +/- : Thickness")
     print("    - R   : Recalibrate IMU wand")
+    print()
+    print("  Website:")
+    print("    - Use website buttons to change color and brush size")
     print()
     print("=" * 60)
     print()
