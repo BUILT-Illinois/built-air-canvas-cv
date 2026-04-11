@@ -24,6 +24,21 @@ def load_config():
         return {"streaming": {"enabled": False}}
 
 
+def _has_videotoolbox() -> bool:
+    """Check if ffmpeg was built with VideoToolbox (Apple Silicon HW encoder)."""
+    if platform.system() != "Darwin":
+        return False
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-encoders"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=5,
+        )
+        return "h264_videotoolbox" in result.stdout
+    except Exception:
+        return False
+
+
 def _ffmpeg_available():
     try:
         subprocess.run(
@@ -357,10 +372,37 @@ def start_streaming(config, frame_width, frame_height):
 
     audio_capture, audio_input_args, audio_desc = _build_audio_input(streaming_cfg)
 
+    use_vtb = _has_videotoolbox()
+
+    if use_vtb:
+        video_enc_args = [
+            "-c:v", "h264_videotoolbox",
+            "-pix_fmt", "yuv420p",
+            "-realtime", "1",
+            "-b:v", bitrate,
+            "-maxrate", bitrate,
+            "-bufsize", bufsize,
+            "-g", str(fps * 2),
+        ]
+        encoder_name = "h264_videotoolbox (Apple Silicon GPU)"
+    else:
+        video_enc_args = [
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", preset,
+            "-tune", "zerolatency",
+            "-b:v", bitrate,
+            "-maxrate", bitrate,
+            "-bufsize", bufsize,
+            "-g", str(fps * 2),
+        ]
+        encoder_name = f"libx264 (CPU, preset={preset})"
+
     ffmpeg_cmd = [
         "ffmpeg", "-y",
+        "-threads", "0",            # 0 = auto-detect, use all cores
         # Input 0: video from stdin
-        "-thread_queue_size", "512",
+        "-thread_queue_size", "1024",
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-pix_fmt", "bgr24",
@@ -373,15 +415,9 @@ def start_streaming(config, frame_width, frame_height):
         # Explicit stream mapping
         "-map", "0:v",
         "-map", "1:a",
-        # Video encoding
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", preset,
-        "-tune", "zerolatency",
-        "-b:v", bitrate,
-        "-maxrate", bitrate,
-        "-bufsize", bufsize,
-        "-g", str(fps * 2),
+        # Video encoding (GPU or CPU)
+        *video_enc_args,
+        "-filter_threads", "2",  # parallel pixel format conversion
         "-vsync", "cfr",
         # Audio encoding
         "-c:a", "aac",
@@ -397,6 +433,7 @@ def start_streaming(config, frame_width, frame_height):
         streamer = Streamer(pipe, fps=fps, audio_capture=audio_capture)
         print("YouTube streaming started!")
         print(f"  URL:    {youtube_cfg['stream_url']}")
+        print(f"  Encoder: {encoder_name}")
         print(f"  Video:  {frame_width}x{frame_height} @ {fps} fps | {bitrate}")
         print(f"  Audio:  {audio_desc}")
         print("  Tip: Set YouTube Studio latency to 'Ultra Low' to cut ~5-8 s of delay.")

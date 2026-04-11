@@ -7,15 +7,23 @@ Features:
 - IMU wand pressure-sensitive drawing
 - Dual MQTT streams (hand publisher + IMU subscriber)
 - Unified OpenCV display
+- Threaded pipeline: camera, MediaPipe, and display run on separate cores
 """
 
+import os
+import threading
 import time
 import warnings
-import math
 
 import cv2
 import mediapipe as mp
 import numpy as np
+
+# ── Performance: maximize CPU + GPU utilization on Apple Silicon ──
+os.environ["OMP_NUM_THREADS"] = str(os.cpu_count())        # OpenMP (NumPy, MediaPipe)
+os.environ["VECLIB_MAXIMUM_THREADS"] = str(os.cpu_count())  # Apple Accelerate (BLAS/LAPACK)
+cv2.setNumThreads(0)                                        # 0 = use all available cores
+cv2.setUseOptimized(True)                                   # enable SIMD/NEON intrinsics
 
 from camera import open_camera
 from drawing import DrawingState
@@ -56,9 +64,114 @@ warnings.filterwarnings(
 WINDOW_MAIN = "Air Canvas Combined"
 WINDOW_SKELETON = "Hand Skeleton"
 
+# Resolution MediaPipe actually needs (it down-samples internally anyway)
+MP_WIDTH, MP_HEIGHT = 640, 480
+
 
 # ------------------------------------------------------------------
-# Initialization
+# Threaded workers — spread work across M-series CPU cores
+# ------------------------------------------------------------------
+
+class CameraReader(threading.Thread):
+    """Dedicated thread for camera capture.
+
+    cap.read() blocks waiting for the sensor — on a 60 fps camera that is
+    up to 16 ms of dead time.  Running it on its own core means the main
+    loop never waits for a frame; it just grabs the latest one.
+    """
+
+    def __init__(self, cap):
+        super().__init__(daemon=True, name="CameraReader")
+        self._cap = cap
+        self._lock = threading.Lock()
+        self._frame = None
+        self._running = True
+
+    def run(self):
+        while self._running:
+            ret, frame = self._cap.read()
+            if not ret or frame is None:
+                continue
+            frame = cv2.flip(frame, 1)
+            with self._lock:
+                self._frame = frame
+
+    def grab(self):
+        """Return the most recent frame (or None before the first capture)."""
+        with self._lock:
+            return self._frame
+
+    def stop(self):
+        self._running = False
+        self.join(timeout=2)
+
+
+class GestureWorker(threading.Thread):
+    """Dedicated thread for MediaPipe gesture recognition.
+
+    Inference takes ~50-65 ms at 1080p.  Running it off the main thread
+    lets display and drawing happen in parallel.  OpenCV and MediaPipe
+    both release the GIL during their C/C++ work, so this is real
+    multi-core parallelism — not just concurrency.
+    """
+
+    def __init__(self, recognizer, frame_width, frame_height):
+        super().__init__(daemon=True, name="GestureWorker")
+        self._recognizer = recognizer
+        self._fw = frame_width
+        self._fh = frame_height
+        self._lock = threading.Lock()
+        self._new_frame = threading.Event()
+        self._input_frame = None
+        self._results = None
+        self._running = True
+        self._video_start = time.time()
+
+    def submit(self, frame):
+        """Hand off a new frame for processing (non-blocking)."""
+        with self._lock:
+            self._input_frame = frame
+        self._new_frame.set()
+
+    def get_results(self):
+        """Return the latest gesture results (may be from a prior frame)."""
+        with self._lock:
+            return self._results
+
+    def run(self):
+        while self._running:
+            self._new_frame.wait(timeout=0.1)
+            self._new_frame.clear()
+
+            with self._lock:
+                frame = self._input_frame
+            if frame is None:
+                continue
+
+            # Down-scale → convert → infer (all release the GIL)
+            small = cv2.resize(frame, (MP_WIDTH, MP_HEIGHT),
+                               interpolation=cv2.INTER_LINEAR)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            ts_ms = int((time.time() - self._video_start) * 1000)
+
+            try:
+                results = self._recognizer.recognize_for_video(mp_image, ts_ms)
+            except ValueError:
+                # Duplicate / non-monotonic timestamp — skip this frame
+                continue
+
+            with self._lock:
+                self._results = results
+
+    def stop(self):
+        self._running = False
+        self._new_frame.set()
+        self.join(timeout=2)
+
+
+# ------------------------------------------------------------------
+# MQTT Initialization
 # ------------------------------------------------------------------
 
 def init_mqtt_publisher():
@@ -98,21 +211,16 @@ def init_mqtt_subscriber(fusion):
     subscriber.connect()
 
     if subscriber.connected:
-        # Subscribe to unified wand topic
         def on_wand_data(topic, msg):
             try:
                 ts = msg.get("timestamp", 0)
                 data = msg.get("data", {})
-
-                # Extract tip and base quaternions from combined message
                 tip_quat = data.get("tip", {}).get("quaternion")
                 base_quat = data.get("base", {}).get("quaternion")
-
                 if tip_quat:
                     fusion.update_tip(tip_quat, ts)
                 if base_quat:
                     fusion.update_base(base_quat, ts)
-
             except KeyError as e:
                 print(f"[WAND] Missing field: {e}")
             except Exception as e:
@@ -130,7 +238,6 @@ def init_brush_request_subscriber(state, existing_subscriber=None):
         print("[BRUSH] MQTT not available, skipping brush requests")
         return None
 
-    # Reuse existing subscriber or create a new one
     subscriber = existing_subscriber
     if not subscriber or not subscriber.connected:
         print("[BRUSH] Creating dedicated subscriber for brush requests...")
@@ -150,21 +257,15 @@ def init_brush_request_subscriber(state, existing_subscriber=None):
     def on_brush_request(topic, msg):
         try:
             print(f"[BRUSH] Raw message: {msg}")
-
-            # Handle wrapped envelope (e.g. {"data": {"color":...}}) or flat payload
             data = msg.get("data", msg) if isinstance(msg, dict) else msg
-
             color = data.get("color", "").lower()
             brush_size = data.get("brushSize", "").lower()
-
             if color in WEB_COLOR_MAP:
                 state.color_index = WEB_COLOR_MAP[color]
                 print(f"[BRUSH] Color → {color}")
-
             if brush_size in WEB_BRUSH_SIZE_MAP:
                 state.line_thickness = WEB_BRUSH_SIZE_MAP[brush_size]
                 print(f"[BRUSH] Size → {brush_size} (thickness={state.line_thickness})")
-
         except Exception as e:
             print(f"[BRUSH] Error processing request: {e}")
 
@@ -178,6 +279,12 @@ def init_brush_request_subscriber(state, existing_subscriber=None):
 # ------------------------------------------------------------------
 
 def main():
+    # Elevate process priority so the OS schedules us on P-cores
+    try:
+        os.nice(-10)
+    except OSError:
+        pass
+
     # Camera
     cap = open_camera()
     if cap is None:
@@ -193,13 +300,12 @@ def main():
     frame = cv2.flip(frame, 1)
     frame_height, frame_width = frame.shape[:2]
 
-    # Create windows explicitly (macOS can otherwise stack/hide one window)
+    # Create windows
     cv2.namedWindow(WINDOW_MAIN, cv2.WINDOW_NORMAL)
     cv2.namedWindow(WINDOW_SKELETON, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_MAIN, frame_width, frame_height)
     cv2.resizeWindow(WINDOW_SKELETON, frame_width, frame_height)
 
-    # Position windows on screen (adjust manually as needed)
     main_x, main_y = 20, 0
     cv2.moveWindow(WINDOW_MAIN, main_x, main_y)
     skeleton_x, skeleton_y = main_x + frame_width // 3, main_y + frame_height // 4
@@ -212,8 +318,14 @@ def main():
     # Drawing state
     state = DrawingState(frame_width, frame_height)
 
-    # Gesture recognizer
+    # Gesture recognizer + threaded worker
     gesture_recognizer = create_gesture_recognizer()
+    gesture_worker = GestureWorker(gesture_recognizer, frame_width, frame_height)
+    gesture_worker.start()
+
+    # Threaded camera reader
+    cam_reader = CameraReader(cap)
+    cam_reader.start()
 
     # IMU fusion
     imu_fusion = IMUFusion(
@@ -227,16 +339,12 @@ def main():
         calibration_samples=IMU_CALIBRATION_SAMPLES if MQTT_AVAILABLE else 60,
     )
 
-    # MQTT publisher (hand tracking)
+    # MQTT
     mqtt_publisher = init_mqtt_publisher()
     mqtt_send_interval = (SEND_INTERVAL_MS / 1000.0
                           if MQTT_AVAILABLE and MQTT_ENABLED else 0)
     last_mqtt_send_time = 0
-
-    # MQTT subscriber (IMU wand)
     mqtt_subscriber = init_mqtt_subscriber(imu_fusion)
-
-    # MQTT subscriber (brush requests from website)
     brush_subscriber = init_brush_request_subscriber(state, mqtt_subscriber)
 
     # Streaming
@@ -244,46 +352,43 @@ def main():
     pipe = start_streaming(app_config, frame_width, frame_height)
 
     # Timing
-    video_start_time = time.time()
     prev_time = time.time()
 
     # HUD state
     current_gesture = "None"
     gesture_confidence = 0.0
 
+    # Pre-allocate buffers (avoid 6 MB allocation per frame)
+    output = np.empty((frame_height, frame_width, 3), dtype=np.uint8)
+    skeleton_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+
     running = True
 
     try:
         while running:
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                print("Error: Failed to capture frame.")
-                break
+            # ── CORE 1 already captured the latest frame ──
+            frame = cam_reader.grab()
+            if frame is None:
+                continue
 
-            frame = cv2.flip(frame, 1)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # ── Submit to CORE 2 for MediaPipe (non-blocking) ──
+            gesture_worker.submit(frame)
 
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-            timestamp_ms = int((time.time() - video_start_time) * 1000)
-            results = gesture_recognizer.recognize_for_video(mp_image, timestamp_ms)
+            # ── MAIN CORE: use latest available gesture results ──
+            results = gesture_worker.get_results()
 
-            # Reset HUD each frame
             current_gesture = "None"
             gesture_confidence = 0.0
-
-            # Skeleton window: separate copy with black background
-            skeleton_frame = np.zeros_like(frame)
+            skeleton_frame[:] = 0
 
             # ────────────────────────────────────────────────────────────
             # HAND TRACKING PROCESSING
             # ────────────────────────────────────────────────────────────
-            if results.hand_landmarks:
-                # Ensure per-hand state exists
+            if results and results.hand_landmarks:
                 for hand_index in range(len(results.hand_landmarks)):
                     state.ensure_hand(hand_index)
 
                 for idx, hand_landmarks in enumerate(results.hand_landmarks):
-                    # Draw hand skeleton on the separate skeleton frame only
                     hand_points = landmarks_to_pixels(
                         hand_landmarks, frame_width, frame_height
                     )
@@ -298,7 +403,6 @@ def main():
                         hand_landmarks, frame_width, frame_height
                     )
 
-                    # Per-hand gesture
                     hand_gesture = "None"
                     hand_confidence = 0.0
                     if results.gestures and idx < len(results.gestures):
@@ -312,7 +416,6 @@ def main():
                     # --- Gesture actions ---
                     if hand_gesture == "Pointing_Up":
                         if index_tip[1] <= toolbar_height:
-                            # Toolbar interaction
                             if point_in_box(index_tip, clear_box):
                                 state.clear_canvas()
                         else:
@@ -357,19 +460,15 @@ def main():
                     last_mqtt_send_time = now
 
             else:
-                # No hands detected
-                current_gesture = "None"
-                gesture_confidence = 0.0
-                state.reset_all_hands()
+                if results is not None:
+                    current_gesture = "None"
+                    gesture_confidence = 0.0
+                    state.reset_all_hands()
 
             # ────────────────────────────────────────────────────────────
             # IMU WAND PROCESSING
             # ────────────────────────────────────────────────────────────
-
-            # Try calibration
             imu_fusion.try_calibrate()
-
-            # Get IMU position
             imu_pos = imu_fusion.get_position()
             imu_cursor_x = imu_cursor_y = None
             imu_pressure = 0.0
@@ -379,7 +478,6 @@ def main():
                 imu_cursor_y = imu_pos["y"]
                 imu_pressure = imu_pos["pressure"]
 
-                # Draw with IMU wand
                 if imu_pos["is_drawing"]:
                     state.draw_imu_wand((imu_cursor_x, imu_cursor_y), imu_pressure)
                 else:
@@ -389,15 +487,12 @@ def main():
             # ────────────────────────────────────────────────────────────
             # COMPOSE OUTPUT FRAME
             # ────────────────────────────────────────────────────────────
-
-            output = frame.copy()
-            draw_mask = np.any(state.canvas != 255, axis=2)
+            np.copyto(output, frame)
+            draw_mask = np.min(state.canvas, axis=2) < 255
             output[draw_mask] = state.canvas[draw_mask]
             output[:toolbar_height, :] = toolbar
 
-            # ────────────────────────────────────────────────────────────
             # HUD: Hand gesture
-            # ────────────────────────────────────────────────────────────
             cv2.putText(output,
                         f"Hand: {current_gesture} ({gesture_confidence:.2f})",
                         (10, frame_height - 85),
@@ -415,11 +510,10 @@ def main():
             cv2.putText(output, imu_status, (10, frame_height - 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, imu_color, 2)
 
-            # HUD: IMU cursor (if active)
+            # HUD: IMU cursor
             if imu_cursor_x is not None and imu_cursor_y is not None:
-                # Draw crosshair cursor
                 cursor_size = int(8 + imu_pressure * 12)
-                cursor_color = (0, 245, 255)  # Cyan for IMU
+                cursor_color = (0, 245, 255)
                 cv2.circle(output, (imu_cursor_x, imu_cursor_y), cursor_size, cursor_color, 2)
                 cv2.line(output, (imu_cursor_x - 10, imu_cursor_y),
                          (imu_cursor_x + 10, imu_cursor_y), cursor_color, 1)
@@ -455,8 +549,8 @@ def main():
             cv2.imshow(WINDOW_SKELETON, skeleton_frame)
             cv2.imshow(WINDOW_MAIN, output)
 
-            # Stream frame
-            pipe = write_frame(pipe, output)
+            # Stream only the white canvas with drawings
+            pipe = write_frame(pipe, state.canvas)
 
             # Keyboard shortcuts
             key = cv2.waitKey(1) & 0xFF
@@ -469,12 +563,12 @@ def main():
             elif key == ord("-"):
                 state.decrease_thickness()
             elif key == ord("r"):
-                # Recalibrate IMU
                 imu_fusion.reset()
                 print("[IMU] Recalibrating... Hold wand still!")
 
     finally:
-        # Cleanup
+        cam_reader.stop()
+        gesture_worker.stop()
         if mqtt_publisher:
             mqtt_publisher.disconnect()
         if mqtt_subscriber:

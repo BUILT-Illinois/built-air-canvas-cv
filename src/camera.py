@@ -1,10 +1,16 @@
-import os
+import platform
 import cv2
 
 
-def open_camera(width=480, height=480, fps=30):
+def open_camera(width=1920, height=1080, fps=60):
     """Try camera indices 0-3 and return a configured VideoCapture, or None."""
-    preferred_backend = cv2.CAP_DSHOW if os.name == "nt" else 0
+    system = platform.system()
+    if system == "Windows":
+        preferred_backend = cv2.CAP_DSHOW
+    elif system == "Darwin":
+        preferred_backend = cv2.CAP_AVFOUNDATION
+    else:
+        preferred_backend = 0
 
     for idx in range(4):
         cap = (cv2.VideoCapture(idx, preferred_backend)
@@ -21,6 +27,7 @@ def open_camera(width=480, height=480, fps=30):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             cap.set(cv2.CAP_PROP_FPS, fps)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # minimal buffer = lowest latency
             return cap
         cap.release()
 
